@@ -5,8 +5,8 @@
  * then extracts frames via an offscreen canvas at a configurable interval.
  */
 
-const CAPTURE_INTERVAL_MS = 5000 // Capture a frame every 5 seconds
-const JPEG_QUALITY = 0.7 // Balance between quality and payload size
+const CAPTURE_INTERVAL_MS = 3000 // Capture a frame every 3 seconds
+const JPEG_QUALITY = 0.5          // Reduced for smaller payload and faster transfer
 const DEBUG = true
 
 let videoStream: MediaStream | null = null
@@ -48,10 +48,10 @@ export async function startScreenCapture(
       mandatory: {
         chromeMediaSource: 'desktop',
         chromeMediaSourceId: sourceId,
-        minWidth: 1280,
-        maxWidth: 1920,
-        minHeight: 720,
-        maxHeight: 1080
+        minWidth: 1024,
+        maxWidth: 1280,
+        minHeight: 576,
+        maxHeight: 720
       }
     } as MediaTrackConstraints
   })

@@ -65,8 +65,13 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'No active interview session' })
     }
 
-    const answer = await generateAnswer(userId, text.trim())
-    return { question: text.trim(), answer }
+    try {
+      const answer = await generateAnswer(userId, text.trim())
+      return { question: text.trim(), answer }
+    } catch (err) {
+      request.log.error({ err }, 'generateAnswer failed')
+      return reply.code(503).send({ error: 'AI service temporarily unavailable. Please try again.' })
+    }
   })
 
   // End interview session

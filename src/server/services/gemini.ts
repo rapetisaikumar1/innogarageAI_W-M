@@ -109,13 +109,36 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
   userSessions.set(userId, chat)
 }
 
+function isTransient(err: unknown): boolean {
+  const msg = (err as Error).message || ''
+  return msg.includes('503') || msg.includes('Service Unavailable') ||
+         msg.includes('429') || msg.includes('Too Many Requests') ||
+         msg.includes('overloaded')
+}
+
+async function retryWithBackoff<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (!isTransient(err) || attempt === maxAttempts) throw err
+      const delay = 1000 * attempt
+      console.warn(`[Gemini] transient error on attempt ${attempt}, retrying in ${delay}ms:`, (err as Error).message)
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+  throw lastErr
+}
+
 export async function generateAnswer(userId: string, question: string): Promise<string> {
   const session = userSessions.get(userId)
   if (!session) {
     throw new Error('No active interview session. Please start an interview first.')
   }
 
-  const result = await session.sendMessage(question)
+  const result = await retryWithBackoff(() => session.sendMessage(question))
   return result.response.text()
 }
 
@@ -155,26 +178,12 @@ export async function transcribeAudio(base64Audio: string, mimeType: string): Pr
     ].join('\n')
   }
 
-  // Try gemini-2.5-flash first, fall back to gemini-1.5-flash on failure
-  const models = ['gemini-2.5-flash', 'gemini-1.5-flash']
-  let lastError: Error | null = null
-
-  for (const modelName of models) {
-    try {
-      const model = ai.getGenerativeModel({ model: modelName })
-      const result = await model.generateContent([audioPart, textPart])
-      const text = result.response.text().trim()
-      if (!text || text === 'NO_SPEECH') return ''
-      // Strip any AI commentary that leaked through
-      return text.replace(/^(transcription:|transcript:|text:)/i, '').trim()
-    } catch (err) {
-      lastError = err as Error
-      console.error(`[transcribeAudio] ${modelName} failed:`, (err as Error).message)
-      // Don't retry on auth/quota errors — rethrow immediately
-      const msg = (err as Error).message || ''
-      if (msg.includes('API_KEY') || msg.includes('PERMISSION_DENIED')) throw err
-    }
-  }
-
-  throw lastError ?? new Error('All transcription models failed')
+  const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' })
+  const result = await retryWithBackoff(() => model.generateContent([audioPart, textPart]))
+  const text = result.response.text().trim()
+  if (!text || text === 'NO_SPEECH') return ''
+  // Strip any AI commentary that leaked through
+  return text.replace(/^(transcription:|transcript:|text:)/i, '').trim()
 }
+
+

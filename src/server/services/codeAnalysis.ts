@@ -97,7 +97,7 @@ export async function initCodeAnalysisSession(userId: string, ctx: CodeAnalysisC
     systemInstruction: buildCodeAnalysisPrompt(ctx),
     generationConfig: {
       // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 4096 },
+      thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json'
     }
   })

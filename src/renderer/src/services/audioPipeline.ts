@@ -11,9 +11,9 @@ const BASE_URL = 'http://localhost:3847'
 
 // VAD tuning
 const SILENCE_THRESHOLD = 0.008  // RMS below this = silence (tuned for processed audio on macOS)
-const SILENCE_DURATION_MS = 2000  // silence gate before sending utterance
-const MIN_UTTERANCE_MS = 400      // discard blobs shorter than this (noise)
-const POLL_INTERVAL_MS = 100     // level check interval
+const SILENCE_DURATION_MS = 1200  // silence gate before sending utterance
+const MIN_UTTERANCE_MS = 250      // discard blobs shorter than this (noise)
+const POLL_INTERVAL_MS = 50       // level check interval
 const DEBUG = true               // set false to silence console logs
 
 type AudioSource = 'mic' | 'system'
@@ -213,8 +213,8 @@ function startRecording(): void {
   }
 
   try {
-    recorder.start(250)  // emit chunks every 250ms so data arrives even on abrupt stop
-    dbg(`  ✓ MediaRecorder.start(250) — state: ${recorder.state}`)
+    recorder.start(100)  // emit chunks every 100ms so data arrives even on abrupt stop
+    dbg(`  ✓ MediaRecorder.start(100) — state: ${recorder.state}`)
   } catch (err) {
     dbg('  ✗ MediaRecorder.start() failed:', err)
     mediaRecorder = null
