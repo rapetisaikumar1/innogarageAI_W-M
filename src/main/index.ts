@@ -94,6 +94,9 @@ ipcMain.on('window:setAlwaysOnTop', (_event, flag: boolean) => {
 ipcMain.on('window:setOverlayMode', (_event, flag: boolean) => {
   if (mainWindow) {
     mainWindow.setBackgroundColor(flag ? '#00000000' : '#00000000')
+    // Hide this window from screen captures when overlay is active.
+    // Prevents Gemini from reading our own Q&A panel and returning it as a code suggestion.
+    mainWindow.setContentProtection(flag)
   }
 })
 

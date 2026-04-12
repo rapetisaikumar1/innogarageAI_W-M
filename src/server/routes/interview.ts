@@ -2,7 +2,8 @@ import { FastifyInstance, FastifyRequest } from 'fastify'
 import { eq } from 'drizzle-orm'
 import { getDb } from '../db'
 import { users, profiles } from '../db/schema'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, verifyToken } from '../middleware/auth'
+import { DeepgramClient } from '@deepgram/sdk'
 import { initUserSession, generateAnswer, endUserSession, hasActiveSession, transcribeAudio } from '../services/gemini'
 import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
 
@@ -11,6 +12,146 @@ interface AuthRequest extends FastifyRequest {
 }
 
 export async function interviewRoutes(app: FastifyInstance): Promise<void> {
+  // ── Deepgram WebSocket proxy ──────────────────────────────────────────────
+  // Renderer streams raw PCM → this endpoint → Deepgram Nova-3
+  // JWT passed as ?token= query param (WebSocket can't set headers)
+  app.get('/interview/stream', { websocket: true }, (socket, request) => {
+    // Authenticate via query param token
+    const token = (request.query as Record<string, string>).token
+    if (!token) { socket.close(4001, 'Missing token'); return }
+
+    let userId: string
+    try {
+      const decoded = verifyToken(token)
+      userId = decoded.userId
+    } catch {
+      socket.close(4001, 'Invalid token')
+      return
+    }
+
+    const apiKey = process.env.DEEPGRAM_API_KEY
+    if (!apiKey) { socket.close(4002, 'Deepgram API key not configured'); return }
+
+    request.log.info({ userId }, 'Deepgram stream started')
+
+    // PCM audio buffered while Deepgram connection is still opening
+    const audioBuffer: Buffer[] = []
+    // eslint-disable-next-line prefer-const
+    let dgConn: { readyState: number; sendMedia: (b: Buffer) => void; close: () => void } | null = null
+
+    // Forward raw PCM from renderer → buffer or Deepgram
+    socket.on('message', (data: Buffer) => {
+      if (dgConn && dgConn.readyState === 1) {
+        dgConn.sendMedia(data)
+      } else {
+        audioBuffer.push(data)
+        // Cap buffer at ~6 seconds of audio (96 × 4096-sample chunks at 16kHz)
+        if (audioBuffer.length > 96) audioBuffer.shift()
+      }
+    })
+
+    socket.on('close', () => {
+      request.log.info({ userId }, 'Renderer WebSocket closed — finishing Deepgram')
+      dgConn?.close()
+    })
+
+    socket.on('error', (err) => {
+      request.log.error({ err }, 'Renderer WebSocket error')
+      dgConn?.close()
+    })
+
+    // Async IIFE — @fastify/websocket v11 requires a sync handler signature
+    ;(async () => {
+      const deepgram = new DeepgramClient({ apiKey })
+
+      // connect() creates the V1Socket; socket.connect() opens the WebSocket
+      const conn = await deepgram.listen.v1.connect({
+        model: 'nova-3',
+        language: 'en',
+        smart_format: true,
+        punctuate: true,
+        interim_results: true,
+        utterance_end_ms: 1500,          // 1.5 s of silence → UtteranceEnd — faster response without cutting speech
+        endpointing: 300,                // 300 ms silence → speech_final within an utterance
+        encoding: 'linear16',
+        sample_rate: 16000,
+        channels: 1,
+        Authorization: `Token ${apiKey}`
+      })
+
+      // Accumulate all is_final words until UtteranceEnd fires
+      let utteranceBuffer = ''
+
+      conn.on('open', () => {
+        request.log.info({ userId }, 'Deepgram WS open — flushing buffer')
+        dgConn = conn
+        // Flush audio that arrived before Deepgram was ready
+        for (const chunk of audioBuffer) conn.sendMedia(chunk)
+        audioBuffer.length = 0
+      })
+
+      conn.on('message', (msg) => {
+        const msgType = (msg as { type?: string }).type
+
+        if (msgType === 'Results') {
+          const result = msg as {
+            type: string
+            channel?: { alternatives?: Array<{ transcript?: string }> }
+            is_final?: boolean
+            speech_final?: boolean
+          }
+          const transcript = result.channel?.alternatives?.[0]?.transcript ?? ''
+          if (!transcript) return
+
+          if (result.is_final) {
+            // Accumulate finalized words into the utterance buffer
+            utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
+          }
+
+          // Always forward interim results for live display (isFinal=false, speechFinal=false)
+          if (!result.is_final && socket.readyState === 1) {
+            socket.send(JSON.stringify({
+              type: 'transcript',
+              text: transcript,
+              isFinal: false,
+              speechFinal: false
+            }))
+          }
+        } else if (msgType === 'UtteranceEnd') {
+          // User has stopped speaking — send the complete accumulated utterance
+          const fullText = utteranceBuffer.trim()
+          utteranceBuffer = ''
+          if (fullText && socket.readyState === 1) {
+            request.log.info({ userId, text: fullText }, 'UtteranceEnd — sending full utterance')
+            socket.send(JSON.stringify({
+              type: 'transcript',
+              text: fullText,
+              isFinal: true,
+              speechFinal: true
+            }))
+          }
+        }
+      })
+
+      conn.on('error', (err) => {
+        request.log.error({ err }, 'Deepgram error')
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify({ type: 'error', message: String(err) }))
+        }
+      })
+
+      conn.on('close', () => {
+        request.log.info({ userId }, 'Deepgram connection closed')
+      })
+
+      // Actually open the WebSocket (V1Client.connect() only creates the socket)
+      conn.connect()
+    })().catch((err) => {
+      request.log.error({ err }, 'Failed to initialize Deepgram connection')
+      try { socket.close(4003, 'Failed to connect to Deepgram') } catch { /* already closed */ }
+    })
+  })
+
   // Start interview session — initializes Gemini with user context
   app.post('/interview/start', { preHandler: authMiddleware }, async (request, reply) => {
     const { userId } = (request as AuthRequest).user

@@ -1,6 +1,7 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import multipart from '@fastify/multipart'
+import websocket from '@fastify/websocket'
 import { config } from 'dotenv'
 import { authRoutes } from './routes/auth'
 import { profileRoutes } from './routes/profile'
@@ -17,6 +18,7 @@ async function start(): Promise<void> {
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   })
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })
+  await app.register(websocket)
 
   await app.register(authRoutes)
   await app.register(profileRoutes)

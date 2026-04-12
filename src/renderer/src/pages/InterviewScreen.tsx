@@ -34,7 +34,6 @@ export default function InterviewScreen(): React.JSX.Element {
   } = useInterviewStore()
 
   const qaTopRef = useRef<HTMLDivElement>(null)
-  const pendingTextRef = useRef<string>('')
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionStartedRef = useRef(false)
   const isProcessingRef = useRef(false)
@@ -55,14 +54,21 @@ export default function InterviewScreen(): React.JSX.Element {
   // Handle screen frame capture — send to AI for code analysis
   const handleScreenFrame = useCallback(
     async (base64: string) => {
-      if (screenAnalysisRef.current) return // Skip if already analyzing
+      if (screenAnalysisRef.current) {
+        console.log('[ScreenPipeline] STAGE 2: skipping — previous analysis still in flight')
+        return
+      }
+      console.log('[ScreenPipeline] STAGE 2: frame received, size:', Math.round(base64.length / 1024), 'KB')
       screenAnalysisRef.current = true
       markFrameProcessing()
       setAnalyzingScreen(true)
 
       try {
+        console.log('[ScreenPipeline] STAGE 3: sending to /interview/code-suggest...')
         const result = await api.codeAnalyze(base64)
+        console.log('[ScreenPipeline] STAGE 4: response received — detected:', result.detected, 'language:', result.language, 'suggestion length:', result.suggestion?.length ?? 0)
         if (result.detected && result.suggestion) {
+          console.log('[ScreenPipeline] STAGE 5: setting code suggestion, context:', result.context)
           setCodeSuggestion({
             id: crypto.randomUUID(),
             detected: result.detected,
@@ -72,13 +78,16 @@ export default function InterviewScreen(): React.JSX.Element {
             explanation: result.explanation,
             timestamp: Date.now()
           })
+        } else {
+          console.log('[ScreenPipeline] STAGE 4: no coding content detected or empty suggestion — skipping UI update')
         }
       } catch (err) {
-        console.error('[ScreenCapture] Code analysis error:', (err as Error).message)
+        console.error('[ScreenPipeline] STAGE 3 ERROR: code analysis failed:', (err as Error).message)
       } finally {
         screenAnalysisRef.current = false
         markFrameProcessed()
         setAnalyzingScreen(false)
+        console.log('[ScreenPipeline] STAGE 5: analysis complete, pipeline ready for next frame')
       }
     },
     [setCodeSuggestion, setAnalyzingScreen]
@@ -120,25 +129,12 @@ export default function InterviewScreen(): React.JSX.Element {
     [addQAPair, setProcessing, setError]
   )
 
-  // Handle final transcript — accumulate and send after silence
+  // Handle final transcript — server sends complete utterance on UtteranceEnd, send straight to AI
   const handleFinalTranscript = useCallback(
     (text: string) => {
-      console.log('[Pipeline STAGE 7] handleFinalTranscript:', JSON.stringify(text))
+      console.log('[Pipeline STAGE 7] handleFinalTranscript (full utterance):', JSON.stringify(text))
       addTranscription(text)
-      pendingTextRef.current += (pendingTextRef.current ? ' ' : '') + text
-      console.log('[Pipeline STAGE 7] pendingText now:', JSON.stringify(pendingTextRef.current))
-
-      // Clear existing timer
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
-
-      debounceTimerRef.current = setTimeout(() => {
-        const accumulated = pendingTextRef.current.trim()
-        console.log('[Pipeline STAGE 7] debounce fired, accumulated:', JSON.stringify(accumulated))
-        if (accumulated) {
-          sendToAI(accumulated)
-          pendingTextRef.current = ''
-        }
-      }, 500)
+      sendToAI(text)
     },
     [addTranscription, sendToAI]
   )

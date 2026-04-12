@@ -5,8 +5,8 @@
  * then extracts frames via an offscreen canvas at a configurable interval.
  */
 
-const CAPTURE_INTERVAL_MS = 3000 // Capture a frame every 3 seconds
-const JPEG_QUALITY = 0.5          // Reduced for smaller payload and faster transfer
+const CAPTURE_INTERVAL_MS = 4000 // Capture every 4s — tighter cadence now that Gemini latency is lower
+const JPEG_QUALITY = 0.72         // Sharp enough for code text OCR; ~20% smaller payload vs 0.8
 const DEBUG = true
 
 let videoStream: MediaStream | null = null
@@ -16,6 +16,7 @@ let captureTimer: ReturnType<typeof setInterval> | null = null
 let isCapturing = false
 let frameCallback: ((base64: string) => void) | null = null
 let isProcessingFrame = false // Prevent overlapping captures
+let lastFrameSample = ''      // Lightweight change detection — skip identical frames
 
 function dbg(...args: unknown[]): void {
   if (DEBUG) console.log('[ScreenCapture]', ...args)
@@ -101,11 +102,26 @@ function captureFrame(): void {
   const base64 = dataUrl.split(',')[1]
 
   if (base64) {
-    dbg(`Frame captured — ${Math.round(base64.length / 1024)}KB`)
-    frameCallback(base64)
-  }
+    // Change detection: sample ~1.5KB spread across the frame — skip if screen hasn't changed
+    const step = Math.floor(base64.length / 512)
+    let sample = ''
+    for (let i = 0; i < 512; i++) sample += base64[i * step]
 
-  isProcessingFrame = false
+    if (sample === lastFrameSample) {
+      dbg('Frame unchanged — skipping')
+      isProcessingFrame = false
+      return
+    }
+    lastFrameSample = sample
+
+    dbg(`Frame captured — ${Math.round(base64.length / 1024)}KB, sending to callback`)
+    // NOTE: do NOT reset isProcessingFrame here — markFrameProcessed() will reset it
+    // after the server responds. Resetting here caused a race where new frames fired
+    // every 3s even while a 6-10s Gemini call was still in flight.
+    frameCallback(base64)
+  } else {
+    isProcessingFrame = false
+  }
 }
 
 /**
@@ -149,6 +165,7 @@ export function stopScreenCapture(): void {
   canvasEl = null
   frameCallback = null
   isProcessingFrame = false
+  lastFrameSample = ''
 }
 
 export function isScreenCaptureActive(): boolean {

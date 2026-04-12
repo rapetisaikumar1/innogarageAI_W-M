@@ -100,7 +100,14 @@ function buildSystemPrompt(ctx: UserContext): string {
 
 export async function initUserSession(userId: string, ctx: UserContext): Promise<void> {
   const ai = getGenAI()
-  const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash', systemInstruction: buildSystemPrompt(ctx) })
+  const model = ai.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction: buildSystemPrompt(ctx),
+    generationConfig: {
+      // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
+      thinkingConfig: { thinkingBudget: 0 }  // disable thinking chain — saves 1-3s per answer
+    }
+  })
 
   const chat = model.startChat({
     history: []
