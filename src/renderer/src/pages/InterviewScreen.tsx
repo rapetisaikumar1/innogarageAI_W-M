@@ -52,12 +52,12 @@ export default function InterviewScreen(): React.JSX.Element {
     isProcessingRef.current = isProcessing
   }, [isProcessing])
 
-  // Directly update code content in the DOM without re-rendering the surrounding card
+  // Directly update code content in the DOM — only on new detected code, never wipes existing
   useEffect(() => {
-    if (codePreRef.current && codeSuggestion?.suggestion !== undefined) {
+    if (codePreRef.current && codeSuggestion?.detected && codeSuggestion.suggestion) {
       codePreRef.current.textContent = codeSuggestion.suggestion
     }
-  }, [codeSuggestion?.suggestion])
+  }, [codeSuggestion?.detected, codeSuggestion?.suggestion])
 
   // Send finalized text to AI — streams answer chunks into the QA pair in real-time
   const sendToAI = useCallback(
@@ -373,129 +373,53 @@ export default function InterviewScreen(): React.JSX.Element {
           )}
         </div>
 
-        {/* ── Right Panel: Code Suggestions (40%) ──────────── */}
+        {/* ── Right Panel: Code (40%) ──────────── */}
         <div className="w-[40%] flex flex-col">
 
           {/* Panel Header */}
           <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-800/60 shrink-0">
             <Code2 className="w-4 h-4 text-emerald-400" />
-            <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Code Suggestions</span>
+            <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Code</span>
+            {isAnalyzingScreen && <Loader2 className="w-3 h-3 text-emerald-400/40 animate-spin ml-0.5" />}
             {codeSuggestion?.language && (
               <span className="ml-auto px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase">
                 {codeSuggestion.language}
               </span>
             )}
+            {codeSuggestion?.suggestion && (
+              <button
+                onClick={handleCopyCode}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 transition-colors"
+              >
+                {copied ? (
+                  <><Check className="w-3.5 h-3.5 text-green-400" /><span className="text-green-400">Copied</span></>
+                ) : (
+                  <><Copy className="w-3.5 h-3.5" /><span>Copy</span></>
+                )}
+              </button>
+            )}
           </div>
 
-          {/* Code suggestion content */}
-          <div className="flex-1 overflow-y-auto">
+          {/* Code content */}
+          <div className="flex-1 overflow-auto">
 
-            {/* Empty state — no suggestion yet */}
-            {!codeSuggestion && !isAnalyzingScreen && (
+            {/* Empty state — shown until first code arrives */}
+            {!codeSuggestion && (
               <div className="flex flex-col items-center justify-center h-full text-center px-6">
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center mb-4">
                   <Monitor className="w-7 h-7 text-emerald-400/40" />
                 </div>
                 <h3 className="text-base font-semibold text-gray-400">Watching Your Screen</h3>
                 <p className="text-xs text-gray-600 mt-2 max-w-[240px] leading-relaxed">
-                  AI is analyzing your screen content. Code suggestions will appear here when coding activity is detected.
+                  Code suggestions will appear here when coding activity is detected.
                 </p>
               </div>
             )}
 
-            {/* Analyzing indicator */}
-            {isAnalyzingScreen && !codeSuggestion && (
-              <div className="flex flex-col items-center justify-center h-full">
-                <div className="flex gap-1.5 mb-3">
-                  <div className="w-2 h-2 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <div className="w-2 h-2 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <div className="w-2 h-2 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-                <span className="text-sm text-gray-500">Analyzing screen content...</span>
-              </div>
-            )}
-
-            {/* Code suggestion display */}
-            {codeSuggestion && codeSuggestion.detected && (
-              <div className="p-4 space-y-3">
-
-                {/* Context */}
-                {codeSuggestion.context && (
-                  <div className="px-3 py-2 rounded-lg bg-gray-900/60 border border-gray-800/50">
-                    <p className="text-xs text-gray-400">{codeSuggestion.context}</p>
-                  </div>
-                )}
-
-                {/* Code block */}
-                <div className="rounded-xl overflow-hidden border border-gray-800/70">
-                  {/* Code header */}
-                  <div className="flex items-center justify-between px-4 py-2 bg-gray-900/80 border-b border-gray-800/50">
-                    <div className="flex items-center gap-2">
-                      <Code2 className="w-3.5 h-3.5 text-emerald-400/70" />
-                      <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider">
-                        {codeSuggestion.language || 'Code'}
-                      </span>
-                    </div>
-                    <button
-                      onClick={handleCopyCode}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 transition-colors"
-                      title="Copy code"
-                    >
-                      {copied ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-green-400" />
-                          <span className="text-green-400">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Code content */}
-                  <div className="bg-[#0d1117] p-4 overflow-x-auto">
-                    <pre ref={codePreRef} className="text-[10px] font-mono text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-                      {codeSuggestion.suggestion}
-                    </pre>
-                  </div>
-                </div>
-
-                {/* Explanation */}
-                {codeSuggestion.explanation && (
-                  <div className="px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/10">
-                    <p className="text-xs text-emerald-300/70 leading-relaxed">{codeSuggestion.explanation}</p>
-                  </div>
-                )}
-
-                {/* Analyzing next indicator */}
-                {isAnalyzingScreen && (
-                  <div className="flex items-center gap-2 pt-2">
-                    <Loader2 className="w-3 h-3 text-emerald-400/50 animate-spin" />
-                    <span className="text-[10px] text-gray-600">Analyzing next frame...</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* No code detected state */}
-            {codeSuggestion && !codeSuggestion.detected && (
-              <div className="flex flex-col items-center justify-center h-full text-center px-6">
-                <div className="w-14 h-14 rounded-2xl bg-gray-800/30 border border-gray-800/50 flex items-center justify-center mb-4">
-                  <Code2 className="w-7 h-7 text-gray-600" />
-                </div>
-                <h3 className="text-sm font-medium text-gray-500">No Code Detected</h3>
-                <p className="text-xs text-gray-600 mt-1.5 max-w-[220px]">
-                  Switch to a code editor or coding platform to see suggestions.
-                </p>
-                {isAnalyzingScreen && (
-                  <div className="flex items-center gap-2 mt-3">
-                    <Loader2 className="w-3 h-3 text-emerald-400/50 animate-spin" />
-                    <span className="text-[10px] text-gray-600">Scanning...</span>
-                  </div>
-                )}
+            {/* Code block — stays mounted once any suggestion arrives, content updated via ref only */}
+            {codeSuggestion && (
+              <div className="h-full bg-[#0d1117] p-4 overflow-auto">
+                <pre ref={codePreRef} className="text-[10px] font-mono text-gray-200 leading-relaxed whitespace-pre-wrap break-words" />
               </div>
             )}
           </div>

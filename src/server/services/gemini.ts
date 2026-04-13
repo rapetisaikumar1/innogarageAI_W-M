@@ -205,9 +205,14 @@ export async function* generateAnswerStream(userId: string, question: string): A
   }
 
   const streamResult = await retryWithBackoff(() => session.sendMessageStream(question))
-  for await (const chunk of streamResult.stream) {
-    const text = chunk.text()
-    if (text) yield text
+  try {
+    for await (const chunk of streamResult.stream) {
+      const text = chunk.text()
+      if (text) yield text
+    }
+  } catch (err) {
+    // Mid-stream failure (e.g. 503 mid-response) — log and stop gracefully
+    console.warn('[Gemini] stream interrupted:', (err as Error).message)
   }
 }
 
