@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Upload, FileText, X } from 'lucide-react'
+import { ArrowLeft, Upload, FileText, X, History } from 'lucide-react'
 import Input from '../components/ui/Input'
 import Select from '../components/ui/Select'
 import Button from '../components/ui/Button'
@@ -178,6 +178,22 @@ export default function UpdateAccount(): React.JSX.Element {
                 </p>
               </div>
 
+            </div>
+
+            {/* Past Sessions shortcut */}
+            <div className="mt-5 pt-5 border-t border-gray-800">
+              <button
+                onClick={() => navigate('/past-sessions')}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-800/50 border border-gray-700 hover:border-brand-500/40 hover:bg-gray-800 transition-colors group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center shrink-0 group-hover:border-brand-500/40 transition-colors">
+                  <History className="w-4 h-4 text-brand-400" />
+                </div>
+                <div className="text-left">
+                  <p className="text-sm font-medium text-gray-300 group-hover:text-white transition-colors">Past Sessions</p>
+                  <p className="text-xs text-gray-500">View your interview history</p>
+                </div>
+              </button>
             </div>
           </div>
         </div>

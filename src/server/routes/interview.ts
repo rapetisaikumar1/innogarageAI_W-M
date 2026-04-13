@@ -4,7 +4,7 @@ import { getDb } from '../db'
 import { users, profiles } from '../db/schema'
 import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
-import { initUserSession, generateAnswer, endUserSession, hasActiveSession, transcribeAudio } from '../services/gemini'
+import { initUserSession, generateAnswer, endUserSession, hasActiveSession } from '../services/gemini'
 import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
 
 interface AuthRequest extends FastifyRequest {
@@ -71,7 +71,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         smart_format: true,
         punctuate: true,
         interim_results: true,
-        utterance_end_ms: 1500,          // 1.5 s of silence → UtteranceEnd — faster response without cutting speech
+        utterance_end_ms: 1200,          // 1.2 s of silence → UtteranceEnd — faster response without cutting speech
         endpointing: 300,                // 300 ms silence → speech_final within an utterance
         encoding: 'linear16',
         sample_rate: 16000,
@@ -104,25 +104,43 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
           if (!transcript) return
 
           if (result.is_final) {
-            // Accumulate finalized words into the utterance buffer
+            // Accumulate finalized words into utterance buffer
             utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
-          }
 
-          // Always forward interim results for live display (isFinal=false, speechFinal=false)
-          if (!result.is_final && socket.readyState === 1) {
-            socket.send(JSON.stringify({
-              type: 'transcript',
-              text: transcript,
-              isFinal: false,
-              speechFinal: false
-            }))
+            // speech_final fires at endpointing (300ms silence) — send immediately.
+            // This fires ~900ms BEFORE UtteranceEnd (utterance_end_ms=1200ms),
+            // giving Gemini a 900ms head-start and eliminating the main latency gap.
+            if (result.speech_final) {
+              const fullText = utteranceBuffer.trim()
+              utteranceBuffer = ''
+              if (fullText && socket.readyState === 1) {
+                request.log.info({ userId, text: fullText }, 'speech_final — sending utterance')
+                socket.send(JSON.stringify({
+                  type: 'transcript',
+                  text: fullText,
+                  isFinal: true,
+                  speechFinal: true
+                }))
+              }
+            }
+          } else {
+            // Interim results — forward for live display only
+            if (socket.readyState === 1) {
+              socket.send(JSON.stringify({
+                type: 'transcript',
+                text: transcript,
+                isFinal: false,
+                speechFinal: false
+              }))
+            }
           }
         } else if (msgType === 'UtteranceEnd') {
-          // User has stopped speaking — send the complete accumulated utterance
+          // Fallback: flush any buffer that speech_final didn't already send.
+          // Handles edge cases such as is_final firing without speech_final.
           const fullText = utteranceBuffer.trim()
           utteranceBuffer = ''
           if (fullText && socket.readyState === 1) {
-            request.log.info({ userId, text: fullText }, 'UtteranceEnd — sending full utterance')
+            request.log.info({ userId, text: fullText }, 'UtteranceEnd fallback — sending remaining buffer')
             socket.send(JSON.stringify({
               type: 'transcript',
               text: fullText,
@@ -227,26 +245,6 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
   app.get('/interview/status', { preHandler: authMiddleware }, async (request) => {
     const { userId } = (request as AuthRequest).user
     return { active: hasActiveSession(userId) }
-  })
-
-  // Transcribe audio chunk via Gemini multimodal
-  app.post('/interview/transcribe', { preHandler: authMiddleware }, async (request, reply) => {
-    const { audio, mimeType } = request.body as { audio: string; mimeType: string }
-
-    if (!audio) {
-      return reply.code(400).send({ error: 'audio is required' })
-    }
-
-    request.log.info({ mimeType, audioLen: audio.length }, 'Transcription request received')
-
-    try {
-      const text = await transcribeAudio(audio, mimeType || 'audio/webm')
-      request.log.info({ text: text.slice(0, 100) }, 'Transcription result')
-      return { text }
-    } catch (err) {
-      request.log.error({ err }, 'Transcription failed')
-      return reply.code(500).send({ error: 'Transcription failed', details: (err as Error).message })
-    }
   })
 
   // Analyze screen capture for code suggestions

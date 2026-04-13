@@ -1,48 +1,157 @@
 /**
- * Screen Capture Pipeline — captures periodic screenshots for AI code analysis.
+ * Screen Capture Pipeline — self-contained, independent of any UI component.
  *
- * Uses Electron's desktopCapturer source ID + getUserMedia to get a video stream,
- * then extracts frames via an offscreen canvas at a configurable interval.
+ * Architecture:
+ *   Captures screen every 1s → change detection → latest-only queue
+ *   → gemini-2.5-pro via /interview/code-suggest → onSuggestion callback
+ *
+ * Queue behaviour: while AI is busy, new frames overwrite pendingFrame (latest wins).
+ * When AI finishes, the latest pending frame (if any) is sent immediately.
+ * This ensures the AI always sees the most current screen state.
  */
 
-const CAPTURE_INTERVAL_MS = 4000 // Capture every 4s — tighter cadence now that Gemini latency is lower
-const JPEG_QUALITY = 0.72         // Sharp enough for code text OCR; ~20% smaller payload vs 0.8
+const CAPTURE_INTERVAL_MS = 2000  // 2s capture cadence
+const JPEG_QUALITY = 0.72          // Sharp enough for code OCR; ~20% smaller than 0.8
+const BASE_URL = 'http://localhost:3847'
 const DEBUG = true
 
+// ── Media state ───────────────────────────────────────────────────────────────
 let videoStream: MediaStream | null = null
 let videoEl: HTMLVideoElement | null = null
 let canvasEl: HTMLCanvasElement | null = null
 let captureTimer: ReturnType<typeof setInterval> | null = null
 let isCapturing = false
-let frameCallback: ((base64: string) => void) | null = null
-let isProcessingFrame = false // Prevent overlapping captures
-let lastFrameSample = ''      // Lightweight change detection — skip identical frames
+
+// ── Pipeline state ────────────────────────────────────────────────────────────
+let isAIBusy = false           // true while a Gemini request is in flight
+let pendingFrame: string | null = null  // latest-only queue — holds most recent unsent frame
+let lastFrameSample = ''       // change detection fingerprint
+
+// ── Callbacks (set by startScreenCapture) ────────────────────────────────────
+let authToken = ''
+let onSuggestionCb: ((result: ScreenSuggestion) => void) | null = null
+let onAnalyzingChangeCb: ((analyzing: boolean) => void) | null = null
+
+export interface ScreenSuggestion {
+  detected: boolean
+  language: string
+  context: string
+  suggestion: string
+  explanation: string
+}
 
 function dbg(...args: unknown[]): void {
   if (DEBUG) console.log('[ScreenCapture]', ...args)
 }
 
+// ── AI call ───────────────────────────────────────────────────────────────────
+
+async function sendToAI(base64: string): Promise<void> {
+  isAIBusy = true
+  onAnalyzingChangeCb?.(true)
+  dbg('Sending frame to AI — size:', Math.round(base64.length / 1024), 'KB')
+
+  try {
+    const res = await fetch(`${BASE_URL}/interview/code-suggest`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify({ image: base64 })
+    })
+
+    if (!res.ok) {
+      dbg('AI API error — status:', res.status)
+      return
+    }
+
+    const result = await res.json() as ScreenSuggestion
+    dbg('AI result — detected:', result.detected, 'language:', result.language)
+    onSuggestionCb?.(result)
+
+  } catch (err) {
+    dbg('AI call failed:', (err as Error).message)
+  } finally {
+    isAIBusy = false
+    onAnalyzingChangeCb?.(false)
+
+    // If a newer frame arrived while we were processing, send it now
+    if (pendingFrame && isCapturing) {
+      const frame = pendingFrame
+      pendingFrame = null
+      dbg('Dequeuing latest pending frame')
+      sendToAI(frame)
+    }
+  }
+}
+
+// ── Frame capture ─────────────────────────────────────────────────────────────
+
+function captureAndQueue(): void {
+  if (!videoEl || !canvasEl || !isCapturing) return
+  if (videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+    dbg('Video not ready')
+    return
+  }
+
+  canvasEl.width = videoEl.videoWidth
+  canvasEl.height = videoEl.videoHeight
+  const ctx = canvasEl.getContext('2d')
+  if (!ctx) return
+
+  ctx.drawImage(videoEl, 0, 0)
+  const dataUrl = canvasEl.toDataURL('image/jpeg', JPEG_QUALITY)
+  const base64 = dataUrl.split(',')[1]
+  if (!base64) return
+
+  // Change detection: sample ~512 points across the frame
+  const step = Math.floor(base64.length / 512)
+  let sample = ''
+  for (let i = 0; i < 512; i++) sample += base64[i * step]
+
+  if (sample === lastFrameSample) {
+    dbg('Frame unchanged — skipping')
+    return
+  }
+  lastFrameSample = sample
+
+  if (isAIBusy) {
+    // AI is busy — store as latest pending (overwrite any older queued frame)
+    dbg('AI busy — queuing frame (latest wins)')
+    pendingFrame = base64
+  } else {
+    // AI is free — send immediately
+    sendToAI(base64)
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export interface ScreenCaptureOptions {
+  token: string
+  onSuggestion: (result: ScreenSuggestion) => void
+  onAnalyzingChange: (analyzing: boolean) => void
+}
+
 /**
- * Start capturing the user's screen at regular intervals.
- * Each captured frame is passed to `onFrame` as a base64 JPEG string.
+ * Start the screen capture pipeline.
+ * Captures every 1s, queues frames when AI is busy (latest frame wins),
+ * sends suggestions via onSuggestion callback.
  */
-export async function startScreenCapture(
-  onFrame: (base64: string) => void
-): Promise<void> {
-  // Teardown any prior instance
+export async function startScreenCapture(options: ScreenCaptureOptions): Promise<void> {
   stopScreenCapture()
 
-  frameCallback = onFrame
+  authToken = options.token
+  onSuggestionCb = options.onSuggestion
+  onAnalyzingChangeCb = options.onAnalyzingChange
 
   // Get desktop source ID from Electron main process
   const sourceId = await window.api.getDesktopAudioSourceId()
-  if (!sourceId) {
-    throw new Error('No screen source available for capture')
-  }
+  if (!sourceId) throw new Error('No screen source available for capture')
 
-  dbg('Starting screen capture, sourceId:', sourceId)
+  dbg('Starting pipeline, sourceId:', sourceId)
 
-  // Get video stream from desktop source
   videoStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -57,114 +166,42 @@ export async function startScreenCapture(
     } as MediaTrackConstraints
   })
 
-  // Create hidden video element to receive the stream
   videoEl = document.createElement('video')
   videoEl.srcObject = videoStream
   videoEl.muted = true
   await videoEl.play()
 
-  // Create offscreen canvas for frame extraction
   canvasEl = document.createElement('canvas')
   isCapturing = true
 
-  dbg(`Stream started — resolution: ${videoEl.videoWidth}x${videoEl.videoHeight}`)
+  dbg(`Stream ready — ${videoEl.videoWidth}x${videoEl.videoHeight}, capturing every ${CAPTURE_INTERVAL_MS}ms`)
 
-  // Wait briefly for video to stabilize, then capture first frame
-  setTimeout(() => {
-    if (isCapturing) captureFrame()
-  }, 500)
+  // First capture after video stabilizes
+  setTimeout(() => { if (isCapturing) captureAndQueue() }, 1500)
 
-  // Then capture periodically
+  // Recurring 1s captures
   captureTimer = setInterval(() => {
-    if (isCapturing && !isProcessingFrame) captureFrame()
+    if (isCapturing) captureAndQueue()
   }, CAPTURE_INTERVAL_MS)
 }
 
-function captureFrame(): void {
-  if (!videoEl || !canvasEl || !frameCallback) return
-  if (videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
-    dbg('Video dimensions not ready, skipping frame')
-    return
-  }
-
-  isProcessingFrame = true
-
-  canvasEl.width = videoEl.videoWidth
-  canvasEl.height = videoEl.videoHeight
-  const ctx = canvasEl.getContext('2d')
-  if (!ctx) {
-    isProcessingFrame = false
-    return
-  }
-
-  ctx.drawImage(videoEl, 0, 0)
-  const dataUrl = canvasEl.toDataURL('image/jpeg', JPEG_QUALITY)
-  const base64 = dataUrl.split(',')[1]
-
-  if (base64) {
-    // Change detection: sample ~1.5KB spread across the frame — skip if screen hasn't changed
-    const step = Math.floor(base64.length / 512)
-    let sample = ''
-    for (let i = 0; i < 512; i++) sample += base64[i * step]
-
-    if (sample === lastFrameSample) {
-      dbg('Frame unchanged — skipping')
-      isProcessingFrame = false
-      return
-    }
-    lastFrameSample = sample
-
-    dbg(`Frame captured — ${Math.round(base64.length / 1024)}KB, sending to callback`)
-    // NOTE: do NOT reset isProcessingFrame here — markFrameProcessed() will reset it
-    // after the server responds. Resetting here caused a race where new frames fired
-    // every 3s even while a 6-10s Gemini call was still in flight.
-    frameCallback(base64)
-  } else {
-    isProcessingFrame = false
-  }
-}
-
 /**
- * Mark frame processing as complete so next capture can proceed.
- * Call this after the server responds to the frame analysis request.
- */
-export function markFrameProcessed(): void {
-  isProcessingFrame = false
-}
-
-/**
- * Temporarily block new captures (while server is processing a frame).
- */
-export function markFrameProcessing(): void {
-  isProcessingFrame = true
-}
-
-/**
- * Stop screen capture and release all resources.
+ * Stop the pipeline and release all resources.
  */
 export function stopScreenCapture(): void {
-  dbg('Stopping screen capture')
+  dbg('Stopping pipeline')
   isCapturing = false
+  pendingFrame = null
+  isAIBusy = false
 
-  if (captureTimer) {
-    clearInterval(captureTimer)
-    captureTimer = null
-  }
-
-  if (videoEl) {
-    videoEl.pause()
-    videoEl.srcObject = null
-    videoEl = null
-  }
-
-  if (videoStream) {
-    videoStream.getTracks().forEach((t) => t.stop())
-    videoStream = null
-  }
+  if (captureTimer) { clearInterval(captureTimer); captureTimer = null }
+  if (videoEl) { videoEl.pause(); videoEl.srcObject = null; videoEl = null }
+  if (videoStream) { videoStream.getTracks().forEach((t) => t.stop()); videoStream = null }
 
   canvasEl = null
-  frameCallback = null
-  isProcessingFrame = false
+  onSuggestionCb = null
+  onAnalyzingChangeCb = null
+  authToken = ''
   lastFrameSample = ''
 }
 

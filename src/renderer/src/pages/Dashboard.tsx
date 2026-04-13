@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Card from '../components/ui/Card'
 import {
@@ -12,9 +13,18 @@ import {
   Zap,
   Globe
 } from 'lucide-react'
+import { useAuthStore } from '../store/authStore'
 
 export default function Dashboard(): React.JSX.Element {
   const navigate = useNavigate()
+  const { isLoggedIn } = useAuthStore()
+
+  // Redirect authenticated users away from the landing page
+  useEffect(() => {
+    if (isLoggedIn) {
+      navigate('/post-auth', { replace: true })
+    }
+  }, [isLoggedIn])
 
   return (
     <div className="min-h-full">

@@ -4,7 +4,7 @@ import { Loader2, MessageSquare, Sparkles, AudioLines, Code2, Monitor, Copy, Che
 import { useAuthStore } from '../store/authStore'
 import { useInterviewStore } from '../store/interviewStore'
 import { startAudioPipeline, stopAudioPipeline, switchAudioSource } from '../services/audioPipeline'
-import { startScreenCapture, stopScreenCapture, markFrameProcessing, markFrameProcessed } from '../services/screenCapture'
+import { startScreenCapture, stopScreenCapture } from '../services/screenCapture'
 import { api } from '../services/api'
 import { useState } from 'react'
 
@@ -38,7 +38,7 @@ export default function InterviewScreen(): React.JSX.Element {
   const sessionStartedRef = useRef(false)
   const isProcessingRef = useRef(false)
   const sendQueueRef = useRef<string[]>([])
-  const screenAnalysisRef = useRef(false)
+  const codePreRef = useRef<HTMLPreElement>(null)
   const [copied, setCopied] = useState(false)
 
   // Auto-scroll to latest QA pair
@@ -51,47 +51,12 @@ export default function InterviewScreen(): React.JSX.Element {
     isProcessingRef.current = isProcessing
   }, [isProcessing])
 
-  // Handle screen frame capture — send to AI for code analysis
-  const handleScreenFrame = useCallback(
-    async (base64: string) => {
-      if (screenAnalysisRef.current) {
-        console.log('[ScreenPipeline] STAGE 2: skipping — previous analysis still in flight')
-        return
-      }
-      console.log('[ScreenPipeline] STAGE 2: frame received, size:', Math.round(base64.length / 1024), 'KB')
-      screenAnalysisRef.current = true
-      markFrameProcessing()
-      setAnalyzingScreen(true)
-
-      try {
-        console.log('[ScreenPipeline] STAGE 3: sending to /interview/code-suggest...')
-        const result = await api.codeAnalyze(base64)
-        console.log('[ScreenPipeline] STAGE 4: response received — detected:', result.detected, 'language:', result.language, 'suggestion length:', result.suggestion?.length ?? 0)
-        if (result.detected && result.suggestion) {
-          console.log('[ScreenPipeline] STAGE 5: setting code suggestion, context:', result.context)
-          setCodeSuggestion({
-            id: crypto.randomUUID(),
-            detected: result.detected,
-            language: result.language,
-            context: result.context,
-            suggestion: result.suggestion,
-            explanation: result.explanation,
-            timestamp: Date.now()
-          })
-        } else {
-          console.log('[ScreenPipeline] STAGE 4: no coding content detected or empty suggestion — skipping UI update')
-        }
-      } catch (err) {
-        console.error('[ScreenPipeline] STAGE 3 ERROR: code analysis failed:', (err as Error).message)
-      } finally {
-        screenAnalysisRef.current = false
-        markFrameProcessed()
-        setAnalyzingScreen(false)
-        console.log('[ScreenPipeline] STAGE 5: analysis complete, pipeline ready for next frame')
-      }
-    },
-    [setCodeSuggestion, setAnalyzingScreen]
-  )
+  // Directly update code content in the DOM without re-rendering the surrounding card
+  useEffect(() => {
+    if (codePreRef.current && codeSuggestion?.suggestion !== undefined) {
+      codePreRef.current.textContent = codeSuggestion.suggestion
+    }
+  }, [codeSuggestion?.suggestion])
 
   // Send finalized text to AI — queues if already processing
   const sendToAI = useCallback(
@@ -178,7 +143,25 @@ export default function InterviewScreen(): React.JSX.Element {
 
         // Start screen capture pipeline
         try {
-          await startScreenCapture(handleScreenFrame)
+          const token = localStorage.getItem('token') || ''
+          await startScreenCapture({
+            token,
+            onSuggestion: (result) => {
+              if (!mounted) return
+              setCodeSuggestion({
+                id: 'screen-suggestion',  // stable id — prevents card re-mount on each update
+                detected: result.detected,
+                language: result.language,
+                context: result.context,
+                suggestion: result.suggestion,
+                explanation: result.explanation,
+                timestamp: Date.now()
+              })
+            },
+            onAnalyzingChange: (analyzing) => {
+              if (mounted) setAnalyzingScreen(analyzing)
+            }
+          })
           if (mounted) setScreenCaptureActive(true)
         } catch (err) {
           console.error('[ScreenCapture] Failed to start:', (err as Error).message)
@@ -461,8 +444,8 @@ export default function InterviewScreen(): React.JSX.Element {
 
                   {/* Code content */}
                   <div className="bg-[#0d1117] p-4 overflow-x-auto">
-                    <pre className="text-sm font-mono text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-                      <code>{codeSuggestion.suggestion}</code>
+                    <pre ref={codePreRef} className="text-[10px] font-mono text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
+                      {codeSuggestion.suggestion}
                     </pre>
                   </div>
                 </div>

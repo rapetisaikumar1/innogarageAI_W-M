@@ -11,6 +11,7 @@ import UpgradePlan from './pages/UpgradePlan'
 import ResumeViewer from './pages/ResumeViewer'
 import AudioPermissions from './pages/AudioPermissions'
 import InterviewScreen from './pages/InterviewScreen'
+import PastSessions from './pages/PastSessions'
 import { useAuthStore } from './store/authStore'
 
 function App(): React.JSX.Element {
@@ -34,6 +35,7 @@ function App(): React.JSX.Element {
           <Route path="/resume-viewer" element={<ResumeViewer />} />
           <Route path="/audio-permissions" element={<AudioPermissions />} />
           <Route path="/interview" element={<InterviewScreen />} />
+          <Route path="/past-sessions" element={<PastSessions />} />
         </Route>
       </Routes>
     </HashRouter>

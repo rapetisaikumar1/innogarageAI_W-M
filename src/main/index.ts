@@ -100,6 +100,10 @@ ipcMain.on('window:setOverlayMode', (_event, flag: boolean) => {
   }
 })
 
+ipcMain.on('window:setContentProtection', (_event, flag: boolean) => {
+  mainWindow?.setContentProtection(flag)
+})
+
 // Open external links
 ipcMain.handle('open-external', (_event, url: string) => {
   shell.openExternal(url)

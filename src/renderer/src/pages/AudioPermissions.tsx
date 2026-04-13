@@ -227,7 +227,7 @@ export default function AudioPermissions(): React.JSX.Element {
                   <span className="text-xs font-medium text-green-400">Allowed</span>
                 </div>
               ) : (
-                <Button size="sm" variant="secondary" onClick={handleRequestSystem} loading={systemLoading}>
+                <Button size="sm" onClick={handleRequestSystem} loading={systemLoading}>
                   Allow
                 </Button>
               )}
@@ -257,7 +257,7 @@ export default function AudioPermissions(): React.JSX.Element {
                   <span className="text-xs font-medium text-green-400">Allowed</span>
                 </div>
               ) : (
-                <Button size="sm" variant="secondary" onClick={handleRequestScreen} loading={screenLoading}>
+                <Button size="sm" onClick={handleRequestScreen} loading={screenLoading}>
                   Allow
                 </Button>
               )}

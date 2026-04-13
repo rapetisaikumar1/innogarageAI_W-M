@@ -18,7 +18,8 @@ const api = {
   getDesktopAudioSourceId: (): Promise<string | null> =>
     ipcRenderer.invoke('audio:get-desktop-source-id'),
   setAlwaysOnTop: (flag: boolean): void => ipcRenderer.send('window:setAlwaysOnTop', flag),
-  setOverlayMode: (flag: boolean): void => ipcRenderer.send('window:setOverlayMode', flag)
+  setOverlayMode: (flag: boolean): void => ipcRenderer.send('window:setOverlayMode', flag),
+  setContentProtection: (flag: boolean): void => ipcRenderer.send('window:setContentProtection', flag)
 }
 
 if (process.contextIsolated) {

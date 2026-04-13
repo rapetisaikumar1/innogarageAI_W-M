@@ -108,11 +108,9 @@ function buildCodeAnalysisPrompt(ctx: CodeAnalysisContext): string {
 export async function initCodeAnalysisSession(userId: string, ctx: CodeAnalysisContext): Promise<void> {
   const ai = getGenAI()
   const model = ai.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-flash-lite',  // lighter model for screen analysis — faster + lower quota usage
     systemInstruction: buildCodeAnalysisPrompt(ctx),
     generationConfig: {
-      // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 0 },  // disable slow thinking chain
       responseMimeType: 'application/json'
     }
   })

@@ -3,7 +3,8 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../../store/authStore'
 import { useProfileStore } from '../../store/profileStore'
 import { useInterviewStore } from '../../store/interviewStore'
-import { User, LogOut, Crown, Mic, Monitor, LogOut as ExitIcon, Timer } from 'lucide-react'
+import { useSessionStore } from '../../store/sessionStore'
+import { User, LogOut, Crown, Mic, Monitor, LogOut as ExitIcon, Timer, Eye, EyeOff, History } from 'lucide-react'
 import { stopAudioPipeline } from '../../services/audioPipeline'
 import { api } from '../../services/api'
 
@@ -128,10 +129,23 @@ export default function Titlebar(): React.JSX.Element {
   const { isLoggedIn, logout } = useAuthStore()
   const { plan, reset: resetProfile } = useProfileStore()
   const { audioSource, setAudioSource, elapsedSeconds, setElapsedSeconds, reset: resetInterview } = useInterviewStore()
+  const { saveSession } = useSessionStore()
   const [isMaximized, setIsMaximized] = useState(false)
+  const [isPrivate, setIsPrivate] = useState(false)
 
   const isInterviewScreen = location.pathname === '/interview'
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Auto-enable private mode when on interview screen, restore public on exit
+  useEffect(() => {
+    if (isInterviewScreen) {
+      setIsPrivate(true)
+      window.api.setContentProtection(true)
+    } else {
+      setIsPrivate(false)
+      window.api.setContentProtection(false)
+    }
+  }, [isInterviewScreen])
 
   // Interview timer
   useEffect(() => {
@@ -178,7 +192,24 @@ export default function Titlebar(): React.JSX.Element {
     navigate('/')
   }
 
+  const handlePrivacyToggle = (): void => {
+    const next = !isPrivate
+    setIsPrivate(next)
+    window.api.setContentProtection(next)
+  }
+
   const handleExitInterview = (): void => {
+    // Save session before resetting state
+    const state = useInterviewStore.getState()
+    if (state.qaPairs.length > 0 || state.transcriptions.length > 0) {
+      saveSession({
+        id: crypto.randomUUID(),
+        date: Date.now(),
+        duration: state.elapsedSeconds,
+        qaPairs: [...state.qaPairs],
+        transcriptions: [...state.transcriptions]
+      })
+    }
     stopAudioPipeline()
     api.interviewEnd().catch(() => {})
     resetInterview()
@@ -267,6 +298,23 @@ export default function Titlebar(): React.JSX.Element {
             {/* Divider */}
             <div className="w-px h-5 bg-gray-700 mx-1" />
 
+            {/* Private/Public toggle — visible on interview screen too */}
+            <button
+              onClick={handlePrivacyToggle}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                isPrivate
+                  ? 'bg-purple-500/20 border-purple-500/30 text-purple-400 hover:bg-purple-500/30'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+              }`}
+              title={isPrivate ? 'Private — app hidden from screen sharing' : 'Public — app visible in screen sharing'}
+            >
+              {isPrivate ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              <span>{isPrivate ? 'Private' : 'Public'}</span>
+            </button>
+
+            {/* Divider */}
+            <div className="w-px h-5 bg-gray-700 mx-1" />
+
             {/* Exit button */}
             <button
               onClick={handleExitInterview}
@@ -287,6 +335,30 @@ export default function Titlebar(): React.JSX.Element {
             )}
             {isLoggedIn && (
               <>
+                {/* Private/Public toggle */}
+                <button
+                  onClick={handlePrivacyToggle}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                    isPrivate
+                      ? 'bg-purple-500/20 border-purple-500/30 text-purple-400 hover:bg-purple-500/30'
+                      : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+                  }`}
+                  title={isPrivate ? 'Private — app hidden from screen sharing' : 'Public — app visible in screen sharing'}
+                >
+                  {isPrivate ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{isPrivate ? 'Private' : 'Public'}</span>
+                </button>
+
+                {/* Past Sessions */}
+                <button
+                  onClick={() => navigate('/past-sessions')}
+                  className="p-1.5 rounded-md hover:bg-gray-700/50 transition-colors"
+                  title="Past Sessions"
+                >
+                  <History className="w-4 h-4 text-gray-400 hover:text-white" />
+                </button>
+
+                {/* Profile */}
                 <button
                   onClick={() => navigate('/update-account')}
                   className="p-1.5 rounded-md hover:bg-gray-700/50 transition-colors"
@@ -294,6 +366,8 @@ export default function Titlebar(): React.JSX.Element {
                 >
                   <User className="w-4 h-4 text-gray-400 hover:text-white" />
                 </button>
+
+                {/* Logout */}
                 <button
                   onClick={handleLogout}
                   className="p-1.5 rounded-md hover:bg-gray-700/50 transition-colors"

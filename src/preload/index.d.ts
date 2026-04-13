@@ -16,6 +16,7 @@ interface WindowAPI {
   getDesktopAudioSourceId: () => Promise<string | null>
   setAlwaysOnTop: (flag: boolean) => void
   setOverlayMode: (flag: boolean) => void
+  setContentProtection: (flag: boolean) => void
 }
 
 declare global {
