@@ -25,8 +25,6 @@ const interviewTypeOptions = [
   { value: 'mixed', label: 'Mixed' }
 ]
 
-const languageOptions = [{ value: 'English', label: 'English' }]
-
 export default function UpdateAccount(): React.JSX.Element {
   const navigate = useNavigate()
   const { user, isLoggedIn } = useAuthStore()
@@ -39,6 +37,7 @@ export default function UpdateAccount(): React.JSX.Element {
     interviewType: '',
     company: '',
     language: 'English',
+    endClient: '',
     aiInstructions: ''
   })
   const [resumeFile, setResumeFile] = useState<File | null>(null)
@@ -67,6 +66,7 @@ export default function UpdateAccount(): React.JSX.Element {
           interviewType: res.profile.interviewType || '',
           company: res.profile.company || '',
           language: res.profile.language || 'English',
+          endClient: (res.profile as Record<string, unknown>).endClient as string || '',
           aiInstructions: res.profile.aiInstructions || ''
         })
       }
@@ -132,7 +132,22 @@ export default function UpdateAccount(): React.JSX.Element {
   }
 
   return (
-    <div className="min-h-full py-6 px-6">
+    <div className="min-h-full py-6 px-6 relative overflow-hidden">
+      {/* Professional background */}
+      <div className="absolute inset-0 -z-10">
+        <div className="absolute inset-0 bg-gray-950" />
+        <div className="absolute -top-32 right-0 w-[600px] h-[600px] bg-brand-500/10 rounded-full blur-[130px]" />
+        <div className="absolute -bottom-32 -left-20 w-[500px] h-[500px] bg-purple-600/8 rounded-full blur-[110px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[400px] bg-blue-500/5 rounded-full blur-[100px]" />
+        <div
+          className="absolute inset-0 opacity-[0.025]"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px)',
+            backgroundSize: '44px 44px'
+          }}
+        />
+      </div>
       <button
         onClick={() => navigate('/post-auth')}
         className="flex items-center gap-2 text-sm text-gray-400 hover:text-white mb-6 transition-colors"
@@ -335,13 +350,17 @@ export default function UpdateAccount(): React.JSX.Element {
             />
           </div>
 
-          {/* Language */}
-          <Select
-            label="Language"
-            options={languageOptions}
-            value={form.language}
-            onChange={(e) => setForm({ ...form, language: e.target.value })}
-          />
+          {/* End Client */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">
+              End Client <span className="text-xs text-gray-500 font-normal">(optional)</span>
+            </label>
+            <Input
+              placeholder="e.g., JPMorgan Chase"
+              value={form.endClient}
+              onChange={(e) => setForm({ ...form, endClient: e.target.value })}
+            />
+          </div>
 
           {/* AI Instructions */}
           <div>

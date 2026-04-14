@@ -34,7 +34,7 @@ export default function InterviewScreen(): React.JSX.Element {
     setScreenCaptureActive
   } = useInterviewStore()
 
-  const qaTopRef = useRef<HTMLDivElement>(null)
+  const qaBottomRef = useRef<HTMLDivElement>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionStartedRef = useRef(false)
   const isProcessingRef = useRef(false)
@@ -44,7 +44,7 @@ export default function InterviewScreen(): React.JSX.Element {
 
   // Auto-scroll to latest QA pair
   useEffect(() => {
-    qaTopRef.current?.scrollIntoView({ behavior: 'smooth' })
+    qaBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [qaPairs])
 
   // Keep isProcessingRef in sync so pipeline callbacks always read the current value
@@ -221,8 +221,6 @@ export default function InterviewScreen(): React.JSX.Element {
     }
   }, [audioSource, isInterviewActive, setError])
 
-  const latestQA = qaPairs[0] ?? null
-
   const handleCopyCode = async (): Promise<void> => {
     if (!codeSuggestion?.suggestion) return
     try {
@@ -291,11 +289,11 @@ export default function InterviewScreen(): React.JSX.Element {
       <div className="flex-1 flex overflow-hidden bg-gray-950/80">
 
         {/* ── Left Panel: AI Transcriptions & Answers (60%) ── */}
-        <div className="w-[60%] flex flex-col border-r border-gray-800/60 overflow-y-auto">
+        <div className="w-[60%] flex flex-col border-r border-gray-800/60">
 
           {/* Empty state */}
-          {!latestQA && !isProcessing && (
-            <div className="flex flex-col items-center justify-center h-full text-center px-6">
+          {qaPairs.length === 0 && !isProcessing && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500/10 to-purple-500/10 border border-brand-500/20 flex items-center justify-center mb-5">
                 <Sparkles className="w-8 h-8 text-brand-400/50" />
               </div>
@@ -307,8 +305,8 @@ export default function InterviewScreen(): React.JSX.Element {
           )}
 
           {/* Processing — first answer loading */}
-          {isProcessing && !latestQA && (
-            <div className="flex flex-col items-center justify-center h-full">
+          {isProcessing && qaPairs.length === 0 && (
+            <div className="flex-1 flex flex-col items-center justify-center">
               <div className="flex gap-1.5 mb-3">
                 <div className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                 <div className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -318,53 +316,59 @@ export default function InterviewScreen(): React.JSX.Element {
             </div>
           )}
 
-          {/* Latest QA pair */}
-          {latestQA && (
-            <div ref={qaTopRef} className="px-5 py-5 space-y-4">
+          {/* All QA pairs — scrollable, chronological (oldest → newest at bottom) */}
+          {qaPairs.length > 0 && (
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+              {[...qaPairs].reverse().map((pair) => {
+                const isLatest = pair.id === qaPairs[0].id
+                return (
+                  <div
+                    key={pair.id}
+                    className="rounded-2xl overflow-hidden border border-brand-500/30 shadow-[0_0_12px_rgba(99,102,241,0.06)] transition-all"
+                  >
+                    {/* Question — highlighted row */}
+                    <div className="px-4 py-3 flex items-start gap-3 bg-gray-800/90">
+                      <MessageSquare className="w-3.5 h-3.5 mt-1 shrink-0 text-gray-300" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest mb-1">Question</p>
+                        <p className="text-sm leading-relaxed text-gray-100">{pair.question}</p>
+                      </div>
+                    </div>
 
-              {/* Question */}
-              <div className="flex items-start gap-3">
-                <div className="w-7 h-7 rounded-lg bg-gray-800/80 border border-gray-700/60 flex items-center justify-center shrink-0 mt-0.5">
-                  <MessageSquare className="w-3.5 h-3.5 text-gray-400" />
-                </div>
-                <div className="flex-1 bg-gray-900/60 border border-gray-800/70 rounded-2xl px-4 py-3">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest mb-1.5">Question</p>
-                  <p className="text-sm text-gray-200 leading-relaxed">{latestQA.question}</p>
-                </div>
-              </div>
+                    {/* Divider */}
+                    <div className="h-px bg-brand-500/20" />
 
-              {/* Answer */}
-              <div className="flex items-start gap-3">
-                <div className="w-7 h-7 rounded-lg bg-brand-500/20 border border-brand-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                  <Sparkles className="w-3.5 h-3.5 text-brand-400" />
-                </div>
-                <div className="flex-1 bg-gradient-to-br from-brand-500/5 to-purple-500/5 border border-brand-500/20 rounded-2xl px-4 py-3">
-                  <p className="text-[10px] font-semibold text-brand-400/60 uppercase tracking-widest mb-1.5">Answer</p>
-                  <div className="text-sm text-gray-100 leading-relaxed whitespace-pre-wrap">
-                    {latestQA.answer}
-                    {isProcessing && (
-                      <span className="inline-block w-0.5 h-[1em] bg-brand-400 ml-0.5 animate-pulse" />
-                    )}
+                    {/* Answer row */}
+                    <div className="px-4 py-3 flex items-start gap-3 bg-gradient-to-br from-brand-500/5 to-purple-500/5">
+                      <Sparkles className="w-3.5 h-3.5 mt-1 shrink-0 text-brand-400" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-semibold uppercase tracking-widest mb-1 text-brand-400/60">Answer</p>
+                        <div className="text-sm text-gray-100 leading-relaxed whitespace-pre-wrap">
+                          {pair.answer}
+                          {isLatest && isProcessing && (
+                            <span className="inline-block w-0.5 h-[1em] bg-brand-400 ml-0.5 animate-pulse" />
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                )
+              })}
 
-              {/* Processing next indicator */}
-              {isProcessing && (
-                <div className="flex items-center gap-2 pl-10 pt-1">
-                  <div className="flex gap-1">
-                    <div className="w-1.5 h-1.5 bg-brand-400/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <div className="w-1.5 h-1.5 bg-brand-400/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <div className="w-1.5 h-1.5 bg-brand-400/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </div>
-                  <span className="text-xs text-gray-600">Processing next...</span>
+              {/* Auto-scroll anchor */}
+              <div ref={qaBottomRef} />
+
+              {/* Error — inline at bottom of list */}
+              {error && (
+                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+                  {error}
                 </div>
               )}
             </div>
           )}
 
-          {/* Error */}
-          {error && (
+          {/* Error — when no QA pairs yet */}
+          {error && qaPairs.length === 0 && (
             <div className="px-5 mt-4">
               <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
                 {error}

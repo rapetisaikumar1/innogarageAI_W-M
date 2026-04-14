@@ -213,7 +213,7 @@ export default function Titlebar(): React.JSX.Element {
     stopAudioPipeline()
     api.interviewEnd().catch(() => {})
     resetInterview()
-    navigate('/audio-permissions')
+    navigate('/post-auth')
   }
 
   return (
@@ -228,9 +228,6 @@ export default function Titlebar(): React.JSX.Element {
             className="no-drag flex items-center gap-2 cursor-pointer"
             onClick={() => navigate('/')}
           >
-            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center">
-              <span className="text-white text-xs font-bold">iG</span>
-            </div>
             <span className="text-sm font-semibold text-white">
               innogarage<span className="text-brand-400">.ai</span>
             </span>
@@ -244,9 +241,6 @@ export default function Titlebar(): React.JSX.Element {
           className="no-drag flex items-center gap-2 cursor-pointer pl-4"
           onClick={() => navigate('/')}
         >
-          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center">
-            <span className="text-white text-xs font-bold">iG</span>
-          </div>
           <span className="text-sm font-semibold text-white">
             innogarage<span className="text-brand-400">.ai</span>
           </span>

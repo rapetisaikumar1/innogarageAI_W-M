@@ -132,7 +132,22 @@ export default function AudioPermissions(): React.JSX.Element {
   const grantedCount = [micGranted, systemGranted, screenGranted].filter(Boolean).length
 
   return (
-    <div className="min-h-full flex flex-col items-center justify-center py-8 px-4">
+    <div className="min-h-full flex flex-col items-center justify-center py-8 px-4 relative overflow-hidden">
+      {/* Professional background */}
+      <div className="absolute inset-0 -z-10">
+        <div className="absolute inset-0 bg-gray-950" />
+        <div className="absolute -top-32 right-0 w-[600px] h-[600px] bg-brand-500/10 rounded-full blur-[130px]" />
+        <div className="absolute -bottom-32 -left-20 w-[500px] h-[500px] bg-purple-600/8 rounded-full blur-[110px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[400px] bg-blue-500/5 rounded-full blur-[100px]" />
+        <div
+          className="absolute inset-0 opacity-[0.025]"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px)',
+            backgroundSize: '44px 44px'
+          }}
+        />
+      </div>
       <div className="w-full max-w-xl">
         {/* Back button */}
         <button
