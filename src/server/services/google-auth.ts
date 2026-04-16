@@ -7,7 +7,7 @@ function getClient(): OAuth2Client {
     _client = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      'http://localhost:3847/auth/google/callback'
+      process.env.GOOGLE_REDIRECT_URL || 'https://innogarage-ai-production.up.railway.app/auth/google/callback'
     )
   }
   return _client
