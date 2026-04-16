@@ -24,7 +24,7 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "electron-vite build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac",
+    "build:mac": "electron-vite build && electron-builder --mac && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist dist/mac-arm64/innogarage.ai.app",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
