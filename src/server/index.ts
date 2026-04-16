@@ -25,7 +25,7 @@ async function start(): Promise<void> {
   await app.register(planRoutes)
   await app.register(interviewRoutes)
 
-  const port = parseInt(process.env.SERVER_PORT || '3847')
+  const port = parseInt(process.env.PORT || process.env.SERVER_PORT || '3847')
   await app.listen({ port, host: '0.0.0.0' })
   console.log(`Server running on http://localhost:${port}`)
 }
