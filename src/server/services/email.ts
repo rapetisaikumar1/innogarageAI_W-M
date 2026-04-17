@@ -5,7 +5,9 @@ let _transporter: nodemailer.Transporter | null = null
 function getTransporter(): nodemailer.Transporter {
   if (!_transporter) {
     _transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
       family: 4, // force IPv4 — Railway does not support IPv6 outbound
       auth: {
         user: process.env.GMAIL_USER,
