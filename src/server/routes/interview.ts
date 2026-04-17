@@ -37,11 +37,11 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     // PCM audio buffered while Deepgram connection is still opening
     const audioBuffer: Buffer[] = []
     // eslint-disable-next-line prefer-const
-    let dgConn: { readyState: number; send: (b: Buffer) => void; requestClose: () => void } | null = null
+    let dgConn: { getReadyState: () => number; send: (b: Buffer) => void; requestClose: () => void } | null = null
 
     // Forward raw PCM from renderer → buffer or Deepgram
     socket.on('message', (data: Buffer) => {
-      if (dgConn && dgConn.readyState === 1) {
+      if (dgConn && dgConn.getReadyState() === 1) {
         dgConn.send(data)
       } else {
         audioBuffer.push(data)
