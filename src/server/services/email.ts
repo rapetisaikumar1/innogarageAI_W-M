@@ -1,27 +1,37 @@
-import { Resend } from 'resend'
+import nodemailer from 'nodemailer'
 
-let _resend: Resend | null = null
+let _transporter: nodemailer.Transporter | null = null
 
-function getResend(): Resend {
-  if (!_resend) {
-    _resend = new Resend(process.env.RESEND_API_KEY)
+function getTransporter(): nodemailer.Transporter {
+  if (!_transporter) {
+    _transporter = nodemailer.createTransport({
+      host: 'smtp.sendgrid.net',
+      port: 587,
+      secure: false,
+      auth: {
+        user: 'apikey',
+        pass: process.env.SENDGRID_SMTP_PASS
+      }
+    })
   }
-  return _resend
+  return _transporter
 }
 
-// Using verified custom domain — requires innogarage.ai to be verified in Resend dashboard
-const FROM = 'innogarage.ai <noreply@innogarage.ai>'
+const FROM = `innogarage.ai <${process.env.SENDGRID_FROM_EMAIL}>`
+
+async function sendMail(to: string, subject: string, html: string): Promise<void> {
+  await getTransporter().sendMail({ from: FROM, to, subject, html })
+}
 
 export async function sendVerificationEmail(
   email: string,
   code: string,
   name: string
 ): Promise<void> {
-  const { error } = await getResend().emails.send({
-    from: FROM,
-    to: email,
-    subject: 'Verify your innogarage.ai account',
-    html: `
+  await sendMail(
+    email,
+    'Verify your innogarage.ai account',
+    `
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #6366f1;">innogarage.ai</h2>
         <p>Hi ${name},</p>
@@ -32,16 +42,14 @@ export async function sendVerificationEmail(
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
     `
-  })
-  if (error) throw new Error(error.message)
+  )
 }
 
 export async function sendSigninOtpEmail(email: string, code: string, name: string): Promise<void> {
-  const { error } = await getResend().emails.send({
-    from: FROM,
-    to: email,
-    subject: 'Your innogarage.ai sign-in code',
-    html: `
+  await sendMail(
+    email,
+    'Your innogarage.ai sign-in code',
+    `
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #6366f1;">innogarage.ai</h2>
         <p>Hi ${name},</p>
@@ -52,16 +60,14 @@ export async function sendSigninOtpEmail(email: string, code: string, name: stri
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
     `
-  })
-  if (error) throw new Error(error.message)
+  )
 }
 
 export async function sendPasswordResetEmail(email: string, code: string): Promise<void> {
-  const { error } = await getResend().emails.send({
-    from: FROM,
-    to: email,
-    subject: 'Reset your innogarage.ai password',
-    html: `
+  await sendMail(
+    email,
+    'Reset your innogarage.ai password',
+    `
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #6366f1;">innogarage.ai</h2>
         <p>Your password reset code is:</p>
@@ -71,7 +77,6 @@ export async function sendPasswordResetEmail(email: string, code: string): Promi
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
     `
-  })
-  if (error) throw new Error(error.message)
+  )
 }
 
