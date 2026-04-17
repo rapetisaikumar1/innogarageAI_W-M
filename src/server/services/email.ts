@@ -1,18 +1,23 @@
-import sgMail from '@sendgrid/mail'
+import { Resend } from 'resend'
 
-function getSgMail(): typeof sgMail {
-  sgMail.setApiKey(process.env.SENDGRID_SMTP_PASS!)
-  return sgMail
+let _resend: Resend | null = null
+
+function getResend(): Resend {
+  if (!_resend) {
+    _resend = new Resend(process.env.RESEND_API_KEY)
+  }
+  return _resend
 }
 
-const FROM = process.env.SENDGRID_FROM_EMAIL ?? 'noreply@innogarage.ai'
+// Using Resend's verified sender domain — works without a custom domain
+const FROM = 'innogarage.ai <onboarding@resend.dev>'
 
 export async function sendVerificationEmail(
   email: string,
   code: string,
   name: string
 ): Promise<void> {
-  await getSgMail().send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to: email,
     subject: 'Verify your innogarage.ai account',
@@ -28,10 +33,11 @@ export async function sendVerificationEmail(
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
 export async function sendSigninOtpEmail(email: string, code: string, name: string): Promise<void> {
-  await getSgMail().send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to: email,
     subject: 'Your innogarage.ai sign-in code',
@@ -47,10 +53,11 @@ export async function sendSigninOtpEmail(email: string, code: string, name: stri
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
 export async function sendPasswordResetEmail(email: string, code: string): Promise<void> {
-  await getSgMail().send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to: email,
     subject: 'Reset your innogarage.ai password',
@@ -65,5 +72,6 @@ export async function sendPasswordResetEmail(email: string, code: string): Promi
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
