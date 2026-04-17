@@ -1,17 +1,25 @@
-import sgMail from '@sendgrid/mail'
+import nodemailer from 'nodemailer'
 
-function getSg(): typeof sgMail {
-  // SENDGRID_API_KEY takes priority; fall back to SENDGRID_SMTP_PASS (same value, different name)
-  const key = process.env.SENDGRID_API_KEY || process.env.SENDGRID_SMTP_PASS
-  sgMail.setApiKey(key!)
-  return sgMail
+let _transporter: nodemailer.Transporter | null = null
+
+function getTransporter(): nodemailer.Transporter {
+  if (!_transporter) {
+    _transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD
+      }
+    })
+  }
+  return _transporter
 }
 
-const FROM = process.env.SENDGRID_FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
+const FROM = `innogarage.ai <${process.env.GMAIL_USER}>`
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  const [response] = await getSg().send({ from: FROM, to, subject, html })
-  console.log(`[email] Sent to ${to} — status ${response.statusCode}`)
+  const info = await getTransporter().sendMail({ from: FROM, to, subject, html })
+  console.log(`[email] Sent to ${to} — messageId: ${info.messageId}`)
 }
 
 export async function sendVerificationEmail(
