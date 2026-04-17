@@ -2,10 +2,22 @@ import sgMail from '@sendgrid/mail'
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!)
 
-const FROM = process.env.SENDGRID_FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
+const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
+const FROM = { email: FROM_EMAIL, name: 'innogarage.ai' }
 
-async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  const [res] = await sgMail.send({ from: FROM, to, subject, html })
+async function sendMail(to: string, subject: string, html: string, text: string): Promise<void> {
+  const [res] = await sgMail.send({
+    from: FROM,
+    replyTo: FROM,
+    to,
+    subject,
+    html,
+    text,
+    trackingSettings: {
+      clickTracking: { enable: false, enableText: false },
+      openTracking: { enable: false }
+    }
+  })
   console.log(`[email] Sent to ${to} — status ${res.statusCode}`)
 }
 
@@ -16,7 +28,7 @@ export async function sendVerificationEmail(
 ): Promise<void> {
   await sendMail(
     email,
-    'Verify your innogarage.ai account',
+    'Your innogarage.ai verification code',
     `
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #6366f1;">innogarage.ai</h2>
@@ -27,7 +39,8 @@ export async function sendVerificationEmail(
         </div>
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
-    `
+    `,
+    `Hi ${name},\n\nYour innogarage.ai verification code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request this, please ignore this email.`
   )
 }
 
@@ -45,14 +58,15 @@ export async function sendSigninOtpEmail(email: string, code: string, name: stri
         </div>
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
-    `
+    `,
+    `Hi ${name},\n\nYour innogarage.ai sign-in code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request this, please ignore this email.`
   )
 }
 
 export async function sendPasswordResetEmail(email: string, code: string): Promise<void> {
   await sendMail(
     email,
-    'Reset your innogarage.ai password',
+    'Your innogarage.ai password reset code',
     `
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #6366f1;">innogarage.ai</h2>
@@ -62,7 +76,8 @@ export async function sendPasswordResetEmail(email: string, code: string): Promi
         </div>
         <p style="color: #64748b; font-size: 14px;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
       </div>
-    `
+    `,
+    `Your innogarage.ai password reset code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request this, please ignore this email.`
   )
 }
 
