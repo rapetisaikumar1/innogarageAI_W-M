@@ -89,11 +89,13 @@ ipcMain.handle('download-file', (_event, url: string) => {
 ipcMain.handle('audio:get-desktop-source-id', async () => {
   try {
     const sources = await desktopCapturer.getSources({ types: ['screen'] })
+    console.log('[desktopCapturer] sources found:', sources.length, sources.map(s => s.name))
     if (sources.length > 0) {
       return sources[0].id
     }
     return null
-  } catch {
+  } catch (err) {
+    console.error('[desktopCapturer] getSources error:', err)
     return null
   }
 })
@@ -102,6 +104,11 @@ ipcMain.handle('audio:get-desktop-source-id', async () => {
 ipcMain.handle('audio:get-screen-permission-status', () => {
   if (process.platform !== 'darwin') return 'granted'
   return systemPreferences.getMediaAccessStatus('screen')
+})
+
+// Opens System Settings to Screen & System Audio Recording
+ipcMain.handle('audio:open-screen-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
 })
 
 // Injects a floating "← Cancel" button into a Google OAuth BrowserWindow.

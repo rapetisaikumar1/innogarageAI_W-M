@@ -19,6 +19,8 @@ const api = {
     ipcRenderer.invoke('audio:get-desktop-source-id'),
   getScreenPermissionStatus: (): Promise<string> =>
     ipcRenderer.invoke('audio:get-screen-permission-status'),
+  openScreenSettings: (): Promise<void> =>
+    ipcRenderer.invoke('audio:open-screen-settings'),
   setAlwaysOnTop: (flag: boolean): void => ipcRenderer.send('window:setAlwaysOnTop', flag),
   setOverlayMode: (flag: boolean): void => ipcRenderer.send('window:setOverlayMode', flag),
   setContentProtection: (flag: boolean): void => ipcRenderer.send('window:setContentProtection', flag)
