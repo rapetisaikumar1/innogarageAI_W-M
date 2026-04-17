@@ -24,8 +24,8 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "electron-vite build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist dist/mac-arm64/innogarage.ai.app",
-    "install:mac": "cp -r dist/mac-arm64/innogarage.ai.app /Applications/ && xattr -cr /Applications/innogarage.ai.app && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist /Applications/innogarage.ai.app && echo 'Installed and signed. Open from /Applications/'",
+    "build:mac": "electron-vite build && electron-builder --mac && codesign --deep --force --sign - dist/mac-arm64/innogarage.ai.app",
+    "install:mac": "rm -rf /Applications/innogarage.ai.app && ditto dist/mac-arm64/innogarage.ai.app /Applications/innogarage.ai.app && xattr -cr /Applications/innogarage.ai.app && codesign --deep --force --sign - /Applications/innogarage.ai.app && echo 'Installed and signed. Open from /Applications/'",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
@@ -53,7 +53,7 @@
     "rehype-highlight": "^7.0.2",
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
-    "resend": "^6.10.0",
+    "resend": "^6.12.0",
     "tsx": "^4.21.0",
     "zustand": "^5.0.12"
   },

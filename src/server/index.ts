@@ -7,7 +7,7 @@ import { authRoutes } from './routes/auth'
 import { profileRoutes } from './routes/profile'
 import { planRoutes } from './routes/plan'
 import { interviewRoutes } from './routes/interview'
-import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 
 config()
 
@@ -26,19 +26,24 @@ async function start(): Promise<void> {
   await app.register(planRoutes)
   await app.register(interviewRoutes)
 
-  // Temporary debug route — checks email env vars and sends a test email
+  // Temporary debug route — checks Resend API key and sends a test email
   app.get('/debug/email', async (_req, reply) => {
-    const user = process.env.GMAIL_USER
-    const pass = process.env.GMAIL_APP_PASSWORD
-    if (!user || !pass) {
-      return reply.send({ ok: false, error: 'Missing env vars', GMAIL_USER: user ?? 'MISSING', GMAIL_APP_PASSWORD: pass ? `${pass.length} chars` : 'MISSING' })
+    const apiKey = process.env.RESEND_API_KEY
+    if (!apiKey) {
+      return reply.send({ ok: false, error: 'Missing RESEND_API_KEY env var' })
     }
     try {
-      const t = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, connectionTimeout: 10000, greetingTimeout: 10000, auth: { user, pass } })
-      await t.sendMail({ from: `"innogarage.ai" <${user}>`, to: user, subject: 'Railway email test', text: 'Railway SMTP is working.' })
-      return { ok: true, GMAIL_USER: user, GMAIL_APP_PASSWORD: `${pass.length} chars` }
+      const resend = new Resend(apiKey)
+      const { error } = await resend.emails.send({
+        from: 'innogarage.ai <onboarding@resend.dev>',
+        to: 'rapetisaikumar1999@gmail.com',
+        subject: 'Railway email test',
+        text: 'Railway Resend API is working.'
+      })
+      if (error) return reply.send({ ok: false, error: error.message })
+      return { ok: true, apiKey: `${apiKey.slice(0, 8)}...` }
     } catch (err: unknown) {
-      return reply.send({ ok: false, error: (err as Error).message, GMAIL_USER: user, GMAIL_APP_PASSWORD: `${pass.length} chars` })
+      return reply.send({ ok: false, error: (err as Error).message })
     }
   })
 

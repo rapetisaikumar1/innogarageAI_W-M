@@ -1,31 +1,23 @@
-import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 
-let _transporter: nodemailer.Transporter | null = null
+let _resend: Resend | null = null
 
-function getTransporter(): nodemailer.Transporter {
-  if (!_transporter) {
-    _transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-      }
-    })
+function getResend(): Resend {
+  if (!_resend) {
+    _resend = new Resend(process.env.RESEND_API_KEY)
   }
-  return _transporter
+  return _resend
 }
+
+const FROM = 'innogarage.ai <onboarding@resend.dev>'
 
 export async function sendVerificationEmail(
   email: string,
   code: string,
   name: string
 ): Promise<void> {
-  await getTransporter().sendMail({
-    from: `"innogarage.ai" <${process.env.GMAIL_USER}>`,
+  const { error } = await getResend().emails.send({
+    from: FROM,
     to: email,
     subject: 'Verify your innogarage.ai account',
     html: `
@@ -40,11 +32,12 @@ export async function sendVerificationEmail(
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
 export async function sendSigninOtpEmail(email: string, code: string, name: string): Promise<void> {
-  await getTransporter().sendMail({
-    from: `"innogarage.ai" <${process.env.GMAIL_USER}>`,
+  const { error } = await getResend().emails.send({
+    from: FROM,
     to: email,
     subject: 'Your innogarage.ai sign-in code',
     html: `
@@ -59,11 +52,12 @@ export async function sendSigninOtpEmail(email: string, code: string, name: stri
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
 export async function sendPasswordResetEmail(email: string, code: string): Promise<void> {
-  await getTransporter().sendMail({
-    from: `"innogarage.ai" <${process.env.GMAIL_USER}>`,
+  const { error } = await getResend().emails.send({
+    from: FROM,
     to: email,
     subject: 'Reset your innogarage.ai password',
     html: `
@@ -77,5 +71,6 @@ export async function sendPasswordResetEmail(email: string, code: string): Promi
       </div>
     `
   })
+  if (error) throw new Error(error.message)
 }
 
