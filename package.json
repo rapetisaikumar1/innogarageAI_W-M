@@ -25,7 +25,7 @@
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "electron-vite build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist dist/mac-arm64/innogarage.ai.app",
-    "install:mac": "cp -r dist/mac-arm64/innogarage.ai.app /Applications/ && xattr -cr /Applications/innogarage.ai.app && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist /Applications/innogarage.ai.app && echo 'Installed and signed. Open from /Applications/'"
+    "install:mac": "cp -r dist/mac-arm64/innogarage.ai.app /Applications/ && xattr -cr /Applications/innogarage.ai.app && codesign --deep --force --sign - --entitlements build/entitlements.mac.plist /Applications/innogarage.ai.app && echo 'Installed and signed. Open from /Applications/'",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {

@@ -71,7 +71,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         smart_format: true,
         punctuate: true,
         interim_results: true,
-        utterance_end_ms: 1200,          // 1.2 s of silence → UtteranceEnd fallback
+        utterance_end_ms: 1850,          // 1.85 s of silence → UtteranceEnd fallback
         endpointing: 300,                // 300 ms silence → speech_final — fast, reliable trigger
         encoding: 'linear16',
         sample_rate: 16000,
@@ -108,7 +108,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
             utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
 
             // speech_final fires at endpointing (300ms silence) — send immediately.
-            // This fires ~900ms BEFORE UtteranceEnd (utterance_end_ms=1200ms),
+            // This fires ~900ms BEFORE UtteranceEnd (utterance_end_ms=1850ms),
             // giving Gemini a 900ms head-start and eliminating the main latency gap.
             if (result.speech_final) {
               const fullText = utteranceBuffer.trim()

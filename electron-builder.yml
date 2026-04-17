@@ -1,5 +1,6 @@
 appId: com.innogarage.ai
 productName: innogarage.ai
+icon: resources/icon.png
 directories:
   buildResources: build
 files:
@@ -13,6 +14,8 @@ asarUnpack:
   - resources/**
 win:
   executableName: innogarage-ai
+  target:
+    - nsis
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
