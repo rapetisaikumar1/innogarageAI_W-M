@@ -26,7 +26,6 @@
     "build:win": "electron-vite build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac && codesign --deep --force --sign - dist/mac-arm64/innogarage.ai.app",
     "install:mac": "rm -rf /Applications/innogarage.ai.app && ditto dist/mac-arm64/innogarage.ai.app /Applications/innogarage.ai.app && xattr -cr /Applications/innogarage.ai.app && echo 'Installed. Open from /Applications/'",
-    "build:win": "electron-vite build && electron-builder --win",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
