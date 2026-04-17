@@ -37,12 +37,12 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     // PCM audio buffered while Deepgram connection is still opening
     const audioBuffer: Buffer[] = []
     // eslint-disable-next-line prefer-const
-    let dgConn: { readyState: number; sendMedia: (b: Buffer) => void; close: () => void } | null = null
+    let dgConn: { readyState: number; send: (b: Buffer) => void; requestClose: () => void } | null = null
 
     // Forward raw PCM from renderer → buffer or Deepgram
     socket.on('message', (data: Buffer) => {
       if (dgConn && dgConn.readyState === 1) {
-        dgConn.sendMedia(data)
+        dgConn.send(data)
       } else {
         audioBuffer.push(data)
         // Cap buffer at ~6 seconds of audio (96 × 4096-sample chunks at 16kHz)
@@ -52,20 +52,20 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
 
     socket.on('close', () => {
       request.log.info({ userId }, 'Renderer WebSocket closed — finishing Deepgram')
-      dgConn?.close()
+      dgConn?.requestClose()
     })
 
     socket.on('error', (err) => {
       request.log.error({ err }, 'Renderer WebSocket error')
-      dgConn?.close()
+      dgConn?.requestClose()
     })
 
     // Async IIFE — @fastify/websocket v11 requires a sync handler signature
     ;(async () => {
-      const deepgram = new DeepgramClient({ apiKey })
+      const deepgram = new DeepgramClient({ key: apiKey })
 
-      // connect() creates the V1Socket; socket.connect() opens the WebSocket
-      const conn = await deepgram.listen.v1.connect({
+      // listen.live() constructs ListenLiveClient and connects immediately
+      const conn = deepgram.listen.live({
         model: 'nova-3',
         language: 'en',
         smart_format: true,
@@ -76,7 +76,6 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         encoding: 'linear16',
         sample_rate: 16000,
         channels: 1,
-        Authorization: `Token ${apiKey}`
       })
 
       // Accumulate all is_final words until UtteranceEnd fires
@@ -86,68 +85,63 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         request.log.info({ userId }, 'Deepgram WS open — flushing buffer')
         dgConn = conn
         // Flush audio that arrived before Deepgram was ready
-        for (const chunk of audioBuffer) conn.sendMedia(chunk)
+        for (const chunk of audioBuffer) conn.send(chunk)
         audioBuffer.length = 0
       })
 
-      conn.on('message', (msg) => {
-        const msgType = (msg as { type?: string }).type
+      conn.on('Results', (msg) => {
+        const result = msg as {
+          type: string
+          channel?: { alternatives?: Array<{ transcript?: string }> }
+          is_final?: boolean
+          speech_final?: boolean
+        }
+        const transcript = result.channel?.alternatives?.[0]?.transcript ?? ''
+        if (!transcript) return
 
-        if (msgType === 'Results') {
-          const result = msg as {
-            type: string
-            channel?: { alternatives?: Array<{ transcript?: string }> }
-            is_final?: boolean
-            speech_final?: boolean
-          }
-          const transcript = result.channel?.alternatives?.[0]?.transcript ?? ''
-          if (!transcript) return
+        if (result.is_final) {
+          // Accumulate finalized words into utterance buffer
+          utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
 
-          if (result.is_final) {
-            // Accumulate finalized words into utterance buffer
-            utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
-
-            // speech_final fires at endpointing (300ms silence) — send immediately.
-            // This fires ~900ms BEFORE UtteranceEnd (utterance_end_ms=1850ms),
-            // giving Gemini a 900ms head-start and eliminating the main latency gap.
-            if (result.speech_final) {
-              const fullText = utteranceBuffer.trim()
-              utteranceBuffer = ''
-              if (fullText && socket.readyState === 1) {
-                request.log.info({ userId, text: fullText }, 'speech_final — sending utterance')
-                socket.send(JSON.stringify({
-                  type: 'transcript',
-                  text: fullText,
-                  isFinal: true,
-                  speechFinal: true
-                }))
-              }
-            }
-          } else {
-            // Interim results — forward for live display only
-            if (socket.readyState === 1) {
+          // speech_final fires at endpointing (300ms silence) — send immediately.
+          if (result.speech_final) {
+            const fullText = utteranceBuffer.trim()
+            utteranceBuffer = ''
+            if (fullText && socket.readyState === 1) {
+              request.log.info({ userId, text: fullText }, 'speech_final — sending utterance')
               socket.send(JSON.stringify({
                 type: 'transcript',
-                text: transcript,
-                isFinal: false,
-                speechFinal: false
+                text: fullText,
+                isFinal: true,
+                speechFinal: true
               }))
             }
           }
-        } else if (msgType === 'UtteranceEnd') {
-          // Fallback: flush any buffer that speech_final didn't already send.
-          // Handles edge cases such as is_final firing without speech_final.
-          const fullText = utteranceBuffer.trim()
-          utteranceBuffer = ''
-          if (fullText && socket.readyState === 1) {
-            request.log.info({ userId, text: fullText }, 'UtteranceEnd fallback — sending remaining buffer')
+        } else {
+          // Interim results — forward for live display only
+          if (socket.readyState === 1) {
             socket.send(JSON.stringify({
               type: 'transcript',
-              text: fullText,
-              isFinal: true,
-              speechFinal: true
+              text: transcript,
+              isFinal: false,
+              speechFinal: false
             }))
           }
+        }
+      })
+
+      conn.on('UtteranceEnd', () => {
+        // Fallback: flush any buffer that speech_final didn't already send.
+        const fullText = utteranceBuffer.trim()
+        utteranceBuffer = ''
+        if (fullText && socket.readyState === 1) {
+          request.log.info({ userId, text: fullText }, 'UtteranceEnd fallback — sending remaining buffer')
+          socket.send(JSON.stringify({
+            type: 'transcript',
+            text: fullText,
+            isFinal: true,
+            speechFinal: true
+          }))
         }
       })
 
@@ -161,9 +155,6 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       conn.on('close', () => {
         request.log.info({ userId }, 'Deepgram connection closed')
       })
-
-      // Actually open the WebSocket (V1Client.connect() only creates the socket)
-      conn.connect()
     })().catch((err) => {
       request.log.error({ err }, 'Failed to initialize Deepgram connection')
       try { socket.close(4003, 'Failed to connect to Deepgram') } catch { /* already closed */ }
