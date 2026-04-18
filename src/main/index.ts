@@ -36,6 +36,18 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  // macOS resets NSWindowSharingNone on focus, show, and space transitions.
+  // Re-apply content protection on each of these events.
+  if (process.platform === 'darwin') {
+    mainWindow.on('focus', () => { if (desiredContentProtection) scheduleContentProtection(100) })
+    mainWindow.on('show',  () => { if (desiredContentProtection) scheduleContentProtection(100) })
+    mainWindow.on('enter-full-screen', () => { if (desiredContentProtection) scheduleContentProtection(200) })
+  }
+  // Windows: re-apply on focus in case WDA_EXCLUDEFROMCAPTURE was reset
+  if (process.platform === 'win32') {
+    mainWindow.on('focus', () => { if (desiredContentProtection) scheduleContentProtection(0) })
+  }
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -71,31 +83,40 @@ ipcMain.on('window:setAlwaysOnTop', (_event, flag: boolean) => {
 
 // Track desired content protection state — re-applied after any window property change
 let desiredContentProtection = false
+let cpTimer: ReturnType<typeof setTimeout> | null = null
 
-function applyContentProtection(): void {
-  if (!mainWindow) return
-  mainWindow.setContentProtection(desiredContentProtection)
-  // On macOS, force a window redraw to ensure content protection takes effect
-  // after background color or other property changes
-  if (process.platform === 'darwin' && desiredContentProtection) {
-    const bounds = mainWindow.getBounds()
-    mainWindow.setBounds({ ...bounds, width: bounds.width + 1 })
-    mainWindow.setBounds(bounds)
-  }
+// Debounced apply — macOS resets NSWindowSharingType asynchronously after
+// setBackgroundColor / setAlwaysOnTop / window moves. By debouncing 150ms we
+// always fire AFTER macOS finishes its internal window reconfiguration.
+function scheduleContentProtection(delayMs = 0): void {
+  if (cpTimer) clearTimeout(cpTimer)
+  cpTimer = setTimeout(() => {
+    cpTimer = null
+    if (!mainWindow) return
+    mainWindow.setContentProtection(desiredContentProtection)
+    // macOS: call twice — once now, once after the next paint — to handle
+    // cases where the compositor resets NSWindowSharingNone after first apply.
+    if (process.platform === 'darwin') {
+      setTimeout(() => {
+        if (!mainWindow) return
+        mainWindow.setContentProtection(desiredContentProtection)
+      }, 150)
+    }
+  }, delayMs)
 }
 
 ipcMain.on('window:setOverlayMode', (_event, flag: boolean) => {
   if (mainWindow) {
     mainWindow.setBackgroundColor(flag ? '#00000000' : '#1a1a2e')
-    // Re-apply content protection after background color change
-    // On macOS, setBackgroundColor can reset the window sharing type
-    applyContentProtection()
+    // Delay re-application — macOS resets NSWindowSharingType after setBackgroundColor.
+    // 150ms gives macOS time to finish its internal window reconfiguration first.
+    scheduleContentProtection(process.platform === 'darwin' ? 150 : 0)
   }
 })
 
 ipcMain.on('window:setContentProtection', (_event, flag: boolean) => {
   desiredContentProtection = flag
-  applyContentProtection()
+  scheduleContentProtection(process.platform === 'darwin' ? 150 : 0)
 })
 
 // Open external links
