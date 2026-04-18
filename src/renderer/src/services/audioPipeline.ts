@@ -118,13 +118,14 @@ function openWebSocket(token: string): WebSocket {
 
 async function getMicStream(): Promise<MediaStream> {
   dbg('─── GET MIC STREAM ───')
+  // NOTE: Do NOT request sampleRate or channelCount as hard constraints —
+  // Windows audio drivers only support 44100Hz/48000Hz and will throw
+  // OverconstrainedError. The AudioContext resamples to 16kHz regardless.
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
-      autoGainControl: true,
-      sampleRate: TARGET_SAMPLE_RATE,
-      channelCount: 1
+      autoGainControl: true
     }
   })
   dbg(`  ✓ ${stream.getAudioTracks().map(t => t.label).join(', ')}`)
