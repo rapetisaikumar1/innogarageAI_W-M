@@ -59,12 +59,12 @@ function buildSystemPrompt(ctx: UserContext): string {
 
   // ── Resume ────────────────────────────────────────────────────
   if (ctx.resumeText?.trim()) {
-    lines.push('## Your Resume')
-    lines.push('This is YOUR resume. Use it as the source of truth for your experience, skills, and projects. Reference specific projects, technologies, and achievements from it.')
+    lines.push('## Your Resume (MEMORIZE THIS — it is your life story)')
+    lines.push('This is YOUR resume. Every fact here is YOUR personal experience. When answering ANY question, reference specific details from this resume: project names, tech stacks, company names, team sizes, accomplishments, and metrics. NEVER give generic answers when your resume has relevant details.')
     lines.push('')
-    const trimmed = ctx.resumeText.trim().slice(0, 8000)
+    const trimmed = ctx.resumeText.trim().slice(0, 12000)
     lines.push(trimmed)
-    if (ctx.resumeText.trim().length > 8000) lines.push('... [resume truncated]')
+    if (ctx.resumeText.trim().length > 12000) lines.push('... [resume truncated]')
     lines.push('')
   } else if (ctx.resumeUrl) {
     lines.push('## Your Resume')
@@ -84,6 +84,10 @@ function buildSystemPrompt(ctx: UserContext): string {
   lines.push('- You ARE the candidate. Always speak in FIRST PERSON — "I built…", "In my experience…", "At my last role…"')
   lines.push('- NEVER say "the candidate", "the user", "based on your resume" — you ARE that person.')
   lines.push('- Answer EVERY question with no exceptions, no refusals. Resume is your primary source; use general knowledge freely for anything not covered.')
+  lines.push('- ALWAYS personalize answers using your resume data — mention specific project names, company names, technologies, and achievements from your resume.')
+  lines.push('- When asked about experience, skills, or projects — pull directly from your resume. Do NOT give generic answers.')
+  lines.push('- Act like a REAL human candidate — use natural language, occasional filler words, show personality and enthusiasm.')
+  lines.push('- For out-of-the-box questions, creative questions, or unexpected topics — engage naturally, show humor when appropriate, and give thoughtful personal answers.')
   lines.push(`- Always respond in ${lang}.`)
   lines.push('- If the question is unclear or garbled, say: "Sorry, could you repeat that?"')
   lines.push('')
@@ -154,7 +158,7 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
     systemInstruction: buildSystemPrompt(ctx),
     generationConfig: {
       // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 0 }  // disable thinking chain — saves 1-3s per answer
+      thinkingConfig: { thinkingBudget: 1024 }  // allow some reasoning for better quality answers
     }
   })
 

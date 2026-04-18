@@ -69,17 +69,33 @@ ipcMain.on('window:setAlwaysOnTop', (_event, flag: boolean) => {
   }
 })
 
+// Track desired content protection state — re-applied after any window property change
+let desiredContentProtection = false
+
+function applyContentProtection(): void {
+  if (!mainWindow) return
+  mainWindow.setContentProtection(desiredContentProtection)
+  // On macOS, force a window redraw to ensure content protection takes effect
+  // after background color or other property changes
+  if (process.platform === 'darwin' && desiredContentProtection) {
+    const bounds = mainWindow.getBounds()
+    mainWindow.setBounds({ ...bounds, width: bounds.width + 1 })
+    mainWindow.setBounds(bounds)
+  }
+}
+
 ipcMain.on('window:setOverlayMode', (_event, flag: boolean) => {
   if (mainWindow) {
     mainWindow.setBackgroundColor(flag ? '#00000000' : '#1a1a2e')
-    // Hide this window from screen captures when overlay is active.
-    // Prevents Gemini from reading our own Q&A panel and returning it as a code suggestion.
-    mainWindow.setContentProtection(flag)
+    // Re-apply content protection after background color change
+    // On macOS, setBackgroundColor can reset the window sharing type
+    applyContentProtection()
   }
 })
 
 ipcMain.on('window:setContentProtection', (_event, flag: boolean) => {
-  mainWindow?.setContentProtection(flag)
+  desiredContentProtection = flag
+  applyContentProtection()
 })
 
 // Open external links

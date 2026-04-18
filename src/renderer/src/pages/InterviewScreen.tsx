@@ -1,12 +1,13 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, MessageSquare, Sparkles, AudioLines, Code2, Monitor, Copy, Check } from 'lucide-react'
+import { Loader2, MessageSquare, Sparkles, AudioLines, Code2, Monitor, Copy, Check, Send } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { useInterviewStore } from '../store/interviewStore'
 import { startAudioPipeline, stopAudioPipeline, switchAudioSource } from '../services/audioPipeline'
-import { startScreenCapture, stopScreenCapture } from '../services/screenCapture'
+import { startScreenCapture, stopScreenCapture, pauseScreenCapture, resumeScreenCapture } from '../services/screenCapture'
 import { api } from '../services/api'
 import { useState } from 'react'
+import { Power } from 'lucide-react'
 
 export default function InterviewScreen(): React.JSX.Element {
   const navigate = useNavigate()
@@ -41,6 +42,10 @@ export default function InterviewScreen(): React.JSX.Element {
   const sendQueueRef = useRef<string[]>([])
   const codePreRef = useRef<HTMLPreElement>(null)
   const [copied, setCopied] = useState(false)
+  const [screenAnalysisEnabled, setScreenAnalysisEnabled] = useState(false)
+  const screenCaptureInitializedRef = useRef(false)
+  const mountedRef = useRef(true)
+  const [chatInput, setChatInput] = useState('')
 
   // Auto-scroll to latest QA pair
   useEffect(() => {
@@ -122,6 +127,7 @@ export default function InterviewScreen(): React.JSX.Element {
     }
 
     let mounted = true
+    mountedRef.current = true
 
     const initSession = async (): Promise<void> => {
       try {
@@ -151,15 +157,15 @@ export default function InterviewScreen(): React.JSX.Element {
           }
         })
 
-        // Start screen capture pipeline
+        // Initialize screen capture pipeline (paused — user activates via toggle)
         try {
           const token = localStorage.getItem('token') || ''
           await startScreenCapture({
             token,
             onSuggestion: (result) => {
-              if (!mounted) return
+              if (!mountedRef.current) return
               setCodeSuggestion({
-                id: 'screen-suggestion',  // stable id — prevents card re-mount on each update
+                id: 'screen-suggestion',
                 detected: result.detected,
                 language: result.language,
                 context: result.context,
@@ -169,13 +175,17 @@ export default function InterviewScreen(): React.JSX.Element {
               })
             },
             onAnalyzingChange: (analyzing) => {
-              if (mounted) setAnalyzingScreen(analyzing)
+              if (mountedRef.current) setAnalyzingScreen(analyzing)
             }
           })
-          if (mounted) setScreenCaptureActive(true)
+          if (mounted) {
+            screenCaptureInitializedRef.current = true
+            // Immediately pause — user needs to enable via toggle
+            pauseScreenCapture()
+            setScreenCaptureActive(false)
+          }
         } catch (err) {
           console.error('[ScreenCapture] Failed to start:', (err as Error).message)
-          // Screen capture failure is non-fatal — audio still works
         }
 
         // Bring interview window to front of all applications
@@ -195,6 +205,7 @@ export default function InterviewScreen(): React.JSX.Element {
 
     return () => {
       mounted = false
+      mountedRef.current = false
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -230,6 +241,26 @@ export default function InterviewScreen(): React.JSX.Element {
     } catch {
       // Clipboard API may not be available
     }
+  }
+
+  const handleScreenAnalysisToggle = (): void => {
+    if (!screenCaptureInitializedRef.current) return
+    if (screenAnalysisEnabled) {
+      pauseScreenCapture()
+      setScreenCaptureActive(false)
+      setScreenAnalysisEnabled(false)
+    } else {
+      resumeScreenCapture()
+      setScreenCaptureActive(true)
+      setScreenAnalysisEnabled(true)
+    }
+  }
+
+  const handleChatSubmit = (): void => {
+    const text = chatInput.trim()
+    if (!text || isProcessing) return
+    setChatInput('')
+    sendToAI(text)
   }
 
   return (
@@ -283,6 +314,20 @@ export default function InterviewScreen(): React.JSX.Element {
             </div>
           </>
         )}
+      </div>
+
+      {/* ── Live Transcript Bar (below status bar) ────── */}
+      <div className="shrink-0 border-b border-gray-800/60 bg-gray-900/60 px-5 py-1.5 flex items-center gap-3">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div className={`w-1.5 h-1.5 rounded-full ${currentInterim ? 'bg-brand-400 animate-pulse' : 'bg-gray-700'}`} />
+          <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">Transcript</span>
+        </div>
+        <div className="w-px h-3.5 bg-gray-800 shrink-0" />
+        <p className={`flex-1 text-xs leading-relaxed truncate ${
+          currentInterim ? 'text-white italic' : transcriptions[0] ? 'text-white' : 'text-gray-400 italic'
+        }`}>
+          {currentInterim || transcriptions[0]?.text || 'Waiting for speech...'}
+        </p>
       </div>
 
       {/* ── Main Content — 60/40 Split ──────────────────────── */}
@@ -385,8 +430,23 @@ export default function InterviewScreen(): React.JSX.Element {
             <Code2 className="w-4 h-4 text-emerald-400" />
             <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Code</span>
             {isAnalyzingScreen && <Loader2 className="w-3 h-3 text-emerald-400/40 animate-spin ml-0.5" />}
+
+            {/* Screen Analysis Toggle */}
+            <button
+              onClick={handleScreenAnalysisToggle}
+              className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
+                screenAnalysisEnabled
+                  ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30'
+                  : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-600'
+              }`}
+              title={screenAnalysisEnabled ? 'Disable screen analysis' : 'Enable screen analysis'}
+            >
+              <Power className="w-3.5 h-3.5" />
+              <span>{screenAnalysisEnabled ? 'On' : 'Off'}</span>
+            </button>
+
             {codeSuggestion?.language && (
-              <span className="ml-auto px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase">
+              <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase">
                 {codeSuggestion.language}
               </span>
             )}
@@ -430,19 +490,29 @@ export default function InterviewScreen(): React.JSX.Element {
         </div>
       </div>
 
-      {/* ── Live Transcript Bar (full-width, bottom) ────── */}
-      <div className="shrink-0 border-t border-gray-800/60 bg-gray-900/80 px-5 py-2.5 flex items-center gap-3">
-        <div className="flex items-center gap-1.5 shrink-0">
-          <div className={`w-1.5 h-1.5 rounded-full ${currentInterim ? 'bg-brand-400 animate-pulse' : 'bg-gray-700'}`} />
-          <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">Transcript</span>
+      {/* ── Chat Input (full-width, bottom) ──────────────── */}
+      <div className="shrink-0 border-t border-gray-800/60 bg-gray-900/90 px-4 py-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSubmit() } }}
+            placeholder="Type a question or message..."
+            className="flex-1 bg-gray-800/80 border border-gray-700/60 rounded-lg px-4 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-brand-500/50 focus:ring-1 focus:ring-brand-500/20 transition-all"
+            disabled={isProcessing}
+          />
+          <button
+            onClick={handleChatSubmit}
+            disabled={!chatInput.trim() || isProcessing}
+            className="p-2 rounded-lg bg-brand-500/20 border border-brand-500/30 text-brand-400 hover:bg-brand-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            title="Send message"
+          >
+            <Send className="w-4 h-4" />
+          </button>
         </div>
-        <div className="w-px h-4 bg-gray-800 shrink-0" />
-        <p className={`flex-1 text-xs leading-relaxed truncate ${
-          currentInterim ? 'text-white italic' : transcriptions[0] ? 'text-white' : 'text-gray-400 italic'
-        }`}>
-          {currentInterim || transcriptions[0]?.text || 'Waiting for speech...'}
-        </p>
       </div>
+
     </div>
   )
 }

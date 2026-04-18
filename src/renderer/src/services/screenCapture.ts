@@ -214,6 +214,25 @@ export function stopScreenCapture(): void {
   lastFrameSample = ''
 }
 
+export function pauseScreenCapture(): void {
+  if (!isCapturing) return
+  dbg('Pausing pipeline')
+  isCapturing = false
+  pendingFrame = null
+  if (captureTimer) { clearInterval(captureTimer); captureTimer = null }
+}
+
+export function resumeScreenCapture(): void {
+  if (isCapturing || !videoEl || !canvasEl) return
+  dbg('Resuming pipeline')
+  isCapturing = true
+  lastFrameSample = '' // force first capture after resume
+  setTimeout(() => { if (isCapturing) captureAndQueue() }, 500)
+  captureTimer = setInterval(() => {
+    if (isCapturing) captureAndQueue()
+  }, CAPTURE_INTERVAL_MS)
+}
+
 export function isScreenCaptureActive(): boolean {
   return isCapturing
 }

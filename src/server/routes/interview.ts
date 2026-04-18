@@ -76,6 +76,11 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         encoding: 'linear16',
         sample_rate: 16000,
         channels: 1,
+        filler_words: true,              // capture "um", "uh" for natural transcript
+        diarize: false,                  // single speaker — skip diarization overhead
+        numerals: true,                  // convert spoken numbers to digits for accuracy
+        no_delay: true,                  // minimize latency — send results as soon as available
+        keywords: [],                    // can be populated per-user for domain-specific terms
       })
 
       // Accumulate all is_final words until UtteranceEnd fires
