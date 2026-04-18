@@ -172,8 +172,8 @@ async function setupAudioCapture(stream: MediaStream): Promise<void> {
 
   const source = audioContext.createMediaStreamSource(stream)
 
-  // bufferSize 4096 = ~256ms of audio at 16kHz — low latency, manageable overhead
-  processor = audioContext.createScriptProcessor(4096, 1, 1)
+  // bufferSize 2048 = ~128ms of audio at 16kHz — lower latency
+  processor = audioContext.createScriptProcessor(2048, 1, 1)
   processor.onaudioprocess = (e) => {
     if (!isRunning || wsConn?.readyState !== WebSocket.OPEN) return
     const float32 = e.inputBuffer.getChannelData(0)

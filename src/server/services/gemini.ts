@@ -158,7 +158,7 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
     systemInstruction: buildSystemPrompt(ctx),
     generationConfig: {
       // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 1024 }  // allow some reasoning for better quality answers
+      thinkingConfig: { thinkingBudget: 0 }  // disable thinking chain — saves 1-2s TTFT latency
     }
   })
 
