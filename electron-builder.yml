@@ -33,8 +33,22 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
     - NSScreenCaptureDescription: innogarage.ai needs screen recording to capture system audio and provide real-time AI interview assistance.
   notarize: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-${arch}.${ext}
+  title: ${productName}
+  icon: resources/icon.png
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
 linux:
   target:
     - AppImage
