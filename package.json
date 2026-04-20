@@ -83,6 +83,7 @@
     "postcss": "^8.5.9",
     "prettier": "^3.7.4",
     "puppeteer": "^24.40.0",
+    "rcedit": "^5.0.2",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "tailwindcss": "^3.4.19",

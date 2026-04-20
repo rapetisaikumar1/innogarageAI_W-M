@@ -1,11 +1,17 @@
 import { FastifyInstance } from 'fastify'
 import { eq } from 'drizzle-orm'
 import bcrypt from 'bcryptjs'
+import crypto from 'crypto'
 import { getDb } from '../db'
 import { users, profiles } from '../db/schema'
 import { sendVerificationEmail, sendSigninOtpEmail, sendPasswordResetEmail } from '../services/email'
 import { getGoogleAuthUrl, getGoogleUser } from '../services/google-auth'
 import { generateToken } from '../middleware/auth'
+
+/** Generate a cryptographically secure 6-digit OTP. */
+function generateOtp(): string {
+  return String(crypto.randomInt(100000, 999999))
+}
 
 // Separate OTP stores for each flow to avoid collisions
 const otpStore = new Map<string, { code: string; expiresAt: number; name: string }>()       // registration
@@ -59,7 +65,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: 'An account with this email already exists.' })
     }
 
-    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const code = generateOtp()
     const expiresAt = Date.now() + 10 * 60 * 1000 // 10 minutes
 
     otpStore.set(email, { code, expiresAt, name })
@@ -160,7 +166,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Credentials valid — generate and send OTP
-    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const code = generateOtp()
     signinOtpStore.set(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 })
 
     // Fire-and-forget — respond immediately, don't block on SMTP
@@ -245,7 +251,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // New user — send OTP to Google email before creating account
-    const otpCode = String(Math.floor(100000 + Math.random() * 900000))
+    const otpCode = generateOtp()
     const expiresAt = Date.now() + 10 * 60 * 1000
     otpStore.set(googleEmail, { code: otpCode, expiresAt, name: googleUser.name })
 
@@ -318,7 +324,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'This email is registered via Google Sign-In. Please use "Sign in with Google" to access your account.' })
     }
 
-    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const code = generateOtp()
     resetOtpStore.set(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 })
 
     try {

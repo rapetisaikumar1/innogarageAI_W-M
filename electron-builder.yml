@@ -1,6 +1,8 @@
 appId: com.innogarage.ai
 productName: innogarage.ai
 icon: resources/icon.png
+afterPack: build/afterPack.cjs
+afterSign: build/afterPack.cjs
 directories:
   buildResources: build
 files:

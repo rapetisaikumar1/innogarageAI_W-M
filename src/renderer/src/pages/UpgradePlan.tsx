@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Check, Crown, Zap, Star } from 'lucide-react'
 import Card from '../components/ui/Card'
@@ -68,6 +68,8 @@ export default function UpgradePlan(): React.JSX.Element {
   const navigate = useNavigate()
   const { isLoggedIn } = useAuthStore()
   const { plan: currentPlan, setPlan } = useProfileStore()
+  const [subscribeError, setSubscribeError] = useState('')
+  const [subscribing, setSubscribing] = useState(false)
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -76,12 +78,16 @@ export default function UpgradePlan(): React.JSX.Element {
   }, [isLoggedIn])
 
   const handleSubscribe = async (planType: string): Promise<void> => {
+    setSubscribeError('')
+    setSubscribing(true)
     try {
       const res = await api.subscribe(planType)
       setPlan(res.plan as typeof currentPlan)
       navigate('/post-auth')
-    } catch {
-      // Handle error
+    } catch (err) {
+      setSubscribeError((err as Error).message)
+    } finally {
+      setSubscribing(false)
     }
   }
 
@@ -157,13 +163,18 @@ export default function UpgradePlan(): React.JSX.Element {
                 className="w-full"
                 variant={p.recommended ? 'primary' : 'secondary'}
                 onClick={() => handleSubscribe(p.type)}
-                disabled={currentPlan?.planType === p.type}
+                disabled={currentPlan?.planType === p.type || subscribing}
+                loading={subscribing}
               >
                 {currentPlan?.planType === p.type ? 'Current Plan' : 'Select Plan'}
               </Button>
             </Card>
           ))}
         </div>
+
+        {subscribeError && (
+          <p className="text-center text-sm text-red-400 mt-4">{subscribeError}</p>
+        )}
 
         {currentPlan && (
           <p className="text-center text-sm text-gray-500 mt-6">

@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Download } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
@@ -12,8 +13,13 @@ export default function ResumeViewer(): React.JSX.Element {
 
   const token = localStorage.getItem('token') || ''
 
+  useEffect(() => {
+    if (!isLoggedIn || !profile?.resumeFilename) {
+      navigate('/update-account', { replace: true })
+    }
+  }, [isLoggedIn, profile?.resumeFilename])
+
   if (!isLoggedIn || !profile?.resumeFilename) {
-    navigate('/update-account')
     return <></>
   }
 

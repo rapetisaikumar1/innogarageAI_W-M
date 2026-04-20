@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Loader2, MessageSquare, Sparkles, AudioLines, Code2, Monitor, Copy, Check, Send } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { useInterviewStore } from '../store/interviewStore'
+import { useSessionStore } from '../store/sessionStore'
 import { startAudioPipeline, stopAudioPipeline, switchAudioSource } from '../services/audioPipeline'
 import { startScreenCapture, stopScreenCapture, pauseScreenCapture, resumeScreenCapture } from '../services/screenCapture'
 import { api } from '../services/api'
@@ -189,12 +190,10 @@ export default function InterviewScreen(): React.JSX.Element {
         }
 
         // Bring interview window to front of all applications
-        // Windows: apply content protection + hide taskbar BEFORE setAlwaysOnTop
-        // because setAlwaysOnTop can reset WDA_EXCLUDEFROMCAPTURE on Windows
-        if (window.api.platform === 'win32') {
-          window.api.setSkipTaskbar(true)
-          window.api.setContentProtection(true)
-        }
+        // Platform modules handle ordering internally (e.g. Windows applies
+        // content protection before setAlwaysOnTop to avoid WDA resets)
+        window.api.setContentProtection(true)
+        window.api.setSkipTaskbar(true)
         window.api.setAlwaysOnTop(true)
         // Enable overlay/transparent mode
         document.body.classList.add('overlay-mode')
@@ -220,15 +219,26 @@ export default function InterviewScreen(): React.JSX.Element {
   useEffect(() => {
     return () => {
       if (sessionStartedRef.current) {
+        // Save interview session before teardown (covers window-close scenario;
+        // the Exit button in Titlebar saves first then resets the store, so
+        // getState() will return empty qaPairs — no duplicate save).
+        const state = useInterviewStore.getState()
+        if (state.qaPairs.length > 0 || state.transcriptions.length > 0) {
+          useSessionStore.getState().saveSession({
+            id: crypto.randomUUID(),
+            date: Date.now(),
+            duration: state.elapsedSeconds,
+            qaPairs: [...state.qaPairs],
+            transcriptions: [...state.transcriptions]
+          })
+        }
+
         stopAudioPipeline()
         stopScreenCapture()
         api.interviewEnd().catch(() => {})
-        // Windows: disable content protection BEFORE removing alwaysOnTop
-        // to prevent the setAlwaysOnTop handler from re-scheduling a CP re-apply
-        if (window.api.platform === 'win32') {
-          window.api.setContentProtection(false)
-          window.api.setSkipTaskbar(false)
-        }
+        // Platform modules handle the correct teardown order internally
+        window.api.setContentProtection(false)
+        window.api.setSkipTaskbar(false)
         window.api.setAlwaysOnTop(false)
         document.body.classList.remove('overlay-mode')
         window.api.setOverlayMode(false)

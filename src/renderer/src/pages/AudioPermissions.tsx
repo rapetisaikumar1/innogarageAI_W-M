@@ -3,33 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Monitor, Mic, Shield, CheckCircle2, AlertCircle, ArrowRight, Info, ScreenShare } from 'lucide-react'
 import Button from '../components/ui/Button'
 import { useAuthStore } from '../store/authStore'
-
-const isMac = window.api.platform === 'darwin'
-const isWin = window.api.platform === 'win32'
-
-const SCREEN_SETTINGS_LABEL = isMac
-  ? 'System Settings > Privacy & Security > Screen & System Audio Recording'
-  : isWin
-    ? 'Settings > Privacy & Security > Screen capture (ms-settings:privacy-graphicscapturewithoutborder)'
-    : 'System privacy settings'
-
-const SCREEN_DENIED_MSG = isMac
-  ? 'System Settings has been opened. Enable innogarage.ai under "Screen & System Audio Recording", then fully QUIT this app (Cmd+Q) and reopen it.'
-  : isWin
-    ? 'Windows Settings has been opened. Allow screen capture for innogarage.ai under Privacy & Security, then fully close and reopen the app.'
-    : 'Enable screen recording permission in your system settings, then restart the app.'
-
-const SCREEN_STALE_MSG = isMac
-  ? 'Permission appears enabled but is outdated (app was re-installed). Open System Settings > Privacy & Security > Screen & System Audio Recording, toggle OFF innogarage.ai, then toggle it back ON, fully QUIT this app (Cmd+Q), and reopen it.'
-  : isWin
-    ? 'Screen capture is enabled but the app cannot access sources. Try fully closing and reopening the app. If the problem persists, uninstall and reinstall innogarage.ai.'
-    : 'Permission appears enabled but is outdated. Please restart the app. If the problem persists, reinstall innogarage.ai.'
-
-const MIC_DENIED_MSG = isMac
-  ? 'Permission denied. Open System Settings > Privacy & Security > Microphone and enable innogarage.ai.'
-  : isWin
-    ? 'Permission denied. Open Settings > Privacy & Security > Microphone and enable innogarage.ai.'
-    : 'Microphone permission denied. Check your system privacy settings.'
+import {
+  screenSettingsLabel as SCREEN_SETTINGS_LABEL,
+  screenDeniedMsg as SCREEN_DENIED_MSG,
+  screenStaleMsg as SCREEN_STALE_MSG,
+  micDeniedMsg as MIC_DENIED_MSG
+} from '../services/platformMessages'
 
 export default function AudioPermissions(): React.JSX.Element {
   const navigate = useNavigate()

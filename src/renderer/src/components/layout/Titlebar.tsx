@@ -136,14 +136,25 @@ export default function Titlebar(): React.JSX.Element {
   const isInterviewScreen = location.pathname === '/interview'
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Sync isMaximized with actual window state (handles OS-initiated maximize/restore)
+  useEffect(() => {
+    const syncMaximized = async (): Promise<void> => {
+      setIsMaximized(await window.api.isMaximized())
+    }
+    // Check on mount and whenever route changes (covers maximize via OS shortcuts)
+    syncMaximized()
+  }, [location.pathname])
+
   // Auto-enable private mode when on interview screen, restore public on exit
   useEffect(() => {
     if (isInterviewScreen) {
       setIsPrivate(true)
       window.api.setContentProtection(true)
+      window.api.setSkipTaskbar(true)
     } else {
       setIsPrivate(false)
       window.api.setContentProtection(false)
+      window.api.setSkipTaskbar(false)
     }
   }, [isInterviewScreen])
 
@@ -196,6 +207,7 @@ export default function Titlebar(): React.JSX.Element {
     const next = !isPrivate
     setIsPrivate(next)
     window.api.setContentProtection(next)
+    window.api.setSkipTaskbar(next)
   }
 
   const handleExitInterview = (): void => {
