@@ -4,15 +4,16 @@ import type { PlatformBehavior } from './types'
 
 // Heartbeat: macOS resets NSWindowSharingNone when screen sharing starts in
 // another app (Zoom, Meet, etc.) — no window event fires at that point.
-// A 3s interval keeps the protection applied no matter what triggers the reset.
+// 1s interval minimises the window where Zoom can capture after any reset.
 let cpHeartbeat: ReturnType<typeof setInterval> | null = null
+let cpActive = false  // whether content protection is currently desired
 
 function startHeartbeat(win: BrowserWindow): void {
   if (cpHeartbeat) return
   cpHeartbeat = setInterval(() => {
     if (win.isDestroyed()) { stopHeartbeat(); return }
     win.setContentProtection(true)
-  }, 3000)
+  }, 1000)
 }
 
 function stopHeartbeat(): void {
@@ -38,6 +39,7 @@ const darwin: PlatformBehavior = {
 
   applyContentProtection(win, enabled) {
     if (win.isDestroyed()) return
+    cpActive = enabled
     win.setContentProtection(enabled)
     if (enabled) {
       startHeartbeat(win)
@@ -52,7 +54,11 @@ const darwin: PlatformBehavior = {
 
   setAlwaysOnTop(win, flag) {
     win.setAlwaysOnTop(flag, 'screen-saver')
+    // setVisibleOnAllWorkspaces resets NSWindowSharingNone on macOS — Zoom
+    // can capture the window during the gap before the heartbeat fires.
+    // Re-apply immediately after the call to close that window.
     win.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true })
+    if (cpActive && !win.isDestroyed()) win.setContentProtection(true)
   },
 
   setSkipTaskbar(_win, _flag) {},
