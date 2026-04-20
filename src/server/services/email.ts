@@ -1,16 +1,48 @@
-import { Resend } from 'resend'
+import https from 'https'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
-
-// Uses Resend's pre-verified sender — no domain setup or DMARC issues
-const FROM = 'innogarage.ai <onboarding@resend.dev>'
+const BREVO_API_KEY = process.env.BREVO_API_KEY || ''
+const FROM_EMAIL = process.env.FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
+const FROM_NAME = 'innogarage.ai'
 
 async function sendMail(to: string, subject: string, html: string, text: string): Promise<void> {
-  const { error } = await resend.emails.send({ from: FROM, to, subject, html, text })
-  if (error) {
-    throw new Error(`Resend error: ${error.message}`)
-  }
-  console.log(`[email] Sent to ${to} via Resend`)
+  const payload = JSON.stringify({
+    sender: { name: FROM_NAME, email: FROM_EMAIL },
+    to: [{ email: to }],
+    subject,
+    htmlContent: html,
+    textContent: text
+  })
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.brevo.com',
+        path: '/v3/smtp/email',
+        method: 'POST',
+        headers: {
+          'api-key': BREVO_API_KEY,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        }
+      },
+      (res) => {
+        let body = ''
+        res.on('data', (chunk) => (body += chunk))
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            console.log(`[email] Sent to ${to} via Brevo — ${res.statusCode}`)
+            resolve()
+          } else {
+            reject(new Error(`Brevo error ${res.statusCode}: ${body}`))
+          }
+        })
+      }
+    )
+    req.on('error', reject)
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Brevo request timed out')) })
+    req.write(payload)
+    req.end()
+  })
 }
 
 export async function sendVerificationEmail(
