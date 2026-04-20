@@ -30,6 +30,12 @@ async function request<T>(
     })
 
     if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        window.location.hash = '#/'
+        throw new Error('Session expired. Please log in again.')
+      }
       const error = await response.json().catch(() => ({ error: 'Request failed' }))
       throw new Error(error.error || 'Request failed')
     }

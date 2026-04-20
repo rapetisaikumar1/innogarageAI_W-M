@@ -110,6 +110,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: 'An account with this email already exists.' })
     }
 
+    if (!password || password.length < 8) {
+      return reply.code(400).send({ error: 'Password must be at least 8 characters.' })
+    }
+
     const passwordHash = await bcrypt.hash(password, 12)
 
     const [user] = await getDb()

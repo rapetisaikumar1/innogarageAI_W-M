@@ -46,7 +46,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       } else {
         audioBuffer.push(data)
         // Cap buffer at ~6 seconds of audio (96 × 4096-sample chunks at 16kHz)
-        if (audioBuffer.length > 96) audioBuffer.shift()
+        if (audioBuffer.length > 480) audioBuffer.shift() // ~30s buffer at 16kHz/2048 chunks
       }
     })
 

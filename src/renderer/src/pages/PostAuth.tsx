@@ -18,6 +18,7 @@ export default function PostAuth(): React.JSX.Element {
   const { isLoggedIn } = useAuthStore()
   const { profile, plan, setProfile, setPlan } = useProfileStore()
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -32,8 +33,8 @@ export default function PostAuth(): React.JSX.Element {
       const res = await api.getProfile()
       if (res.profile) setProfile(res.profile)
       if (res.plan) setPlan(res.plan)
-    } catch {
-      // If token expired, redirect to login
+    } catch (err) {
+      setFetchError((err as Error).message)
     } finally {
       setLoading(false)
     }
@@ -47,6 +48,22 @@ export default function PostAuth(): React.JSX.Element {
     return (
       <div className="min-h-full flex items-center justify-center">
         <div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full" />
+      </div>
+    )
+  }
+
+  if (fetchError) {
+    return (
+      <div className="min-h-full flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <p className="text-red-400">{fetchError}</p>
+          <button
+            onClick={() => { setFetchError(null); setLoading(true); fetchStatus() }}
+            className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     )
   }
