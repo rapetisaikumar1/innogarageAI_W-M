@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build macOS
 
 on:
   workflow_dispatch:
@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build-macos:
+    runs-on: macos-latest
 
     steps:
       - name: Checkout code
@@ -26,25 +26,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Windows installer
-        run: npm run build:win
+      - name: Build macOS DMG (arm64 + x64)
+        run: electron-vite build && electron-builder --mac --arm64 --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Upload artifacts (non-tag runs)
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: dist/*-setup.exe
+          name: macos-installer
+          path: dist/*.dmg
           retention-days: 30
 
-      - name: Create GitHub Release and upload EXE (tag runs)
+      - name: Create GitHub Release and upload DMG (tag runs)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*-setup.exe
+            dist/*.dmg
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
