@@ -223,11 +223,13 @@ export default function InterviewScreen(): React.JSX.Element {
         stopAudioPipeline()
         stopScreenCapture()
         api.interviewEnd().catch(() => {})
-        window.api.setAlwaysOnTop(false)
+        // Windows: disable content protection BEFORE removing alwaysOnTop
+        // to prevent the setAlwaysOnTop handler from re-scheduling a CP re-apply
         if (window.api.platform === 'win32') {
-          window.api.setSkipTaskbar(false)
           window.api.setContentProtection(false)
+          window.api.setSkipTaskbar(false)
         }
+        window.api.setAlwaysOnTop(false)
         document.body.classList.remove('overlay-mode')
         window.api.setOverlayMode(false)
         sessionStartedRef.current = false

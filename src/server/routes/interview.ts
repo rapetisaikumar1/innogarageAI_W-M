@@ -111,8 +111,10 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
           // speech_final fires at endpointing (300ms silence) — send immediately.
           if (result.speech_final) {
             const fullText = utteranceBuffer.trim()
-            utteranceBuffer = ''
+            // Only clear buffer AFTER confirming the socket is open to send.
+            // If socket is closed here, leave buffer for UtteranceEnd fallback.
             if (fullText && socket.readyState === 1) {
+              utteranceBuffer = ''
               request.log.info({ userId, text: fullText }, 'speech_final — sending utterance')
               socket.send(JSON.stringify({
                 type: 'transcript',
