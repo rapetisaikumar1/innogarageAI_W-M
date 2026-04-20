@@ -1,16 +1,19 @@
 import sgMail from '@sendgrid/mail'
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY || '')
+sgMail.setTimeout(8000) // 8s max per API call — prevents hanging
 
-// Use a non-Gmail FROM to pass Gmail DMARC — must be a verified sender in SendGrid
 const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
 const FROM = { email: FROM_EMAIL, name: 'innogarage.ai' }
 
+/** Send mail with one automatic retry on transient failure. */
 async function sendMail(to: string, subject: string, html: string, text: string): Promise<void> {
   if (!process.env.SENDGRID_API_KEY) {
-    throw new Error('SENDGRID_API_KEY is not configured on the server.')
+    console.error('[email] SENDGRID_API_KEY is not set — cannot send email')
+    return
   }
-  const [res] = await sgMail.send({
+
+  const msg = {
     from: FROM,
     replyTo: FROM,
     to,
@@ -21,8 +24,22 @@ async function sendMail(to: string, subject: string, html: string, text: string)
       clickTracking: { enable: false, enableText: false },
       openTracking: { enable: false }
     }
-  })
-  console.log(`[email] Sent to ${to} — status ${res.statusCode}`)
+  }
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const [res] = await sgMail.send(msg)
+      console.log(`[email] Sent to ${to} — status ${res.statusCode} (attempt ${attempt})`)
+      return
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[email] Attempt ${attempt} failed for ${to}: ${errMsg}`)
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 1500)) // wait 1.5s before retry
+      }
+    }
+  }
+  console.error(`[email] All attempts failed for ${to}`)
 }
 
 export async function sendVerificationEmail(
