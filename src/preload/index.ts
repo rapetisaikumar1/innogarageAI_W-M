@@ -23,7 +23,8 @@ const api = {
     ipcRenderer.invoke('audio:open-screen-settings'),
   setAlwaysOnTop: (flag: boolean): void => ipcRenderer.send('window:setAlwaysOnTop', flag),
   setOverlayMode: (flag: boolean): void => ipcRenderer.send('window:setOverlayMode', flag),
-  setContentProtection: (flag: boolean): void => ipcRenderer.send('window:setContentProtection', flag)
+  setContentProtection: (flag: boolean): void => ipcRenderer.send('window:setContentProtection', flag),
+  setSkipTaskbar: (flag: boolean): void => ipcRenderer.send('window:setSkipTaskbar', flag)
 }
 
 if (process.contextIsolated) {

@@ -32,6 +32,12 @@ function createWindow(): void {
     }
   })
 
+  // Windows: use a generic title so the window doesn't stand out in Task Manager
+  // (the Processes tab still shows the .exe name, but the window title is neutral)
+  if (process.platform === 'win32') {
+    mainWindow.setTitle('Microsoft Edge')
+  }
+
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
@@ -78,6 +84,17 @@ ipcMain.on('window:setAlwaysOnTop', (_event, flag: boolean) => {
     if (process.platform !== 'win32') {
       mainWindow.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true })
     }
+    // Windows: setAlwaysOnTop can reset WDA_EXCLUDEFROMCAPTURE — re-apply immediately
+    if (process.platform === 'win32' && desiredContentProtection) {
+      scheduleContentProtection(50)
+    }
+  }
+})
+
+// Windows: toggle skipTaskbar dynamically when entering/leaving interview mode
+ipcMain.on('window:setSkipTaskbar', (_event, flag: boolean) => {
+  if (mainWindow && process.platform === 'win32') {
+    mainWindow.setSkipTaskbar(flag)
   }
 })
 

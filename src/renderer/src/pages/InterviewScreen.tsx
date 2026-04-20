@@ -189,6 +189,12 @@ export default function InterviewScreen(): React.JSX.Element {
         }
 
         // Bring interview window to front of all applications
+        // Windows: apply content protection + hide taskbar BEFORE setAlwaysOnTop
+        // because setAlwaysOnTop can reset WDA_EXCLUDEFROMCAPTURE on Windows
+        if (window.api.platform === 'win32') {
+          window.api.setSkipTaskbar(true)
+          window.api.setContentProtection(true)
+        }
         window.api.setAlwaysOnTop(true)
         // Enable overlay/transparent mode
         document.body.classList.add('overlay-mode')
@@ -218,6 +224,10 @@ export default function InterviewScreen(): React.JSX.Element {
         stopScreenCapture()
         api.interviewEnd().catch(() => {})
         window.api.setAlwaysOnTop(false)
+        if (window.api.platform === 'win32') {
+          window.api.setSkipTaskbar(false)
+          window.api.setContentProtection(false)
+        }
         document.body.classList.remove('overlay-mode')
         window.api.setOverlayMode(false)
         sessionStartedRef.current = false

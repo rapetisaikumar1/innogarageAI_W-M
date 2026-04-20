@@ -19,6 +19,7 @@ interface WindowAPI {
   setAlwaysOnTop: (flag: boolean) => void
   setOverlayMode: (flag: boolean) => void
   setContentProtection: (flag: boolean) => void
+  setSkipTaskbar: (flag: boolean) => void
 }
 
 declare global {
