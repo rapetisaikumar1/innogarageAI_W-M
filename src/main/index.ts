@@ -1,5 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, net, desktopCapturer, systemPreferences } from 'electron'
 import { join } from 'path'
+import { execFile } from 'child_process'
+import { writeFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -95,10 +97,9 @@ ipcMain.on('window:setAlwaysOnTop', (_event, flag: boolean) => {
     if (process.platform !== 'win32') {
       mainWindow.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true })
     }
-    // Windows: setAlwaysOnTop can reset WDA_EXCLUDEFROMCAPTURE — re-apply after a longer
-    // delay (150ms) to account for slower GPU drivers and high system load
+    // Windows: setAlwaysOnTop can reset display affinity — re-apply with native API
     if (process.platform === 'win32' && desiredContentProtection) {
-      scheduleContentProtection(150)
+      scheduleContentProtection(150, true)
     }
   }
 })
@@ -114,28 +115,96 @@ ipcMain.on('window:setSkipTaskbar', (_event, flag: boolean) => {
 let desiredContentProtection = false
 let cpTimer: ReturnType<typeof setTimeout> | null = null
 
-// Debounced apply — macOS resets NSWindowSharingType asynchronously after
-// setBackgroundColor / setAlwaysOnTop / window moves. By debouncing 150ms we
-// always fire AFTER macOS finishes its internal window reconfiguration.
-function scheduleContentProtection(delayMs = 0): void {
+// ── Windows native SetWindowDisplayAffinity via PowerShell ──────────────────
+// Electron's setContentProtection(true) only uses WDA_EXCLUDEFROMCAPTURE (0x11)
+// which was introduced in Win10 build 2004 (May 2020).  On older Win10 builds
+// (1909, 1903, 1809, …) the API silently fails and the window remains fully
+// visible to screen capture.
+//
+// WDA_MONITOR (0x01) has existed since Windows 7 and makes the captured image
+// of the window show as a BLACK rectangle — not invisible, but content is hidden.
+//
+// Strategy:
+//   1. Call native API with WDA_EXCLUDEFROMCAPTURE (0x11) first.
+//   2. If it fails (older Win10), fall back to WDA_MONITOR (0x01).
+//   3. Electron's setContentProtection is still called as belt-and-suspenders
+//      for the frequent re-apply events (focus/move/resize) where spawning
+//      PowerShell would be too slow.
+
+const WDA_NONE = 0x00
+const WDA_MONITOR = 0x01
+const WDA_EXCLUDEFROMCAPTURE = 0x11
+
+let affinityScriptPath: string | null = null
+let nativeCallPending = false
+// Track whether this Win10 build supports WDA_EXCLUDEFROMCAPTURE
+let win10UseFallback = false
+
+function getAffinityScript(): string {
+  if (!affinityScriptPath) {
+    affinityScriptPath = join(app.getPath('temp'), `ig-wda-${process.pid}.ps1`)
+    writeFileSync(affinityScriptPath, [
+      'param([long]$h,[uint32]$a)',
+      "Add-Type 'using System;using System.Runtime.InteropServices;public class W{[DllImport(\"user32.dll\")]public static extern bool SetWindowDisplayAffinity(IntPtr h,uint a);}'",
+      '$r=[W]::SetWindowDisplayAffinity([IntPtr]::new($h),$a)',
+      'exit $(if($r){0}else{1})'
+    ].join('\n'))
+  }
+  return affinityScriptPath
+}
+
+function callNativeAffinity(affinity: number, callback?: () => void): void {
+  if (!mainWindow || nativeCallPending) { callback?.(); return }
+  nativeCallPending = true
+  const hwnd = mainWindow.getNativeWindowHandle()
+  const hwndStr = hwnd.byteLength >= 8
+    ? hwnd.readBigInt64LE(0).toString()
+    : hwnd.readUInt32LE(0).toString()
+
+  execFile('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', getAffinityScript(), '-h', hwndStr, '-a', affinity.toString()
+  ], { timeout: 10000 }, (err) => {
+    nativeCallPending = false
+    if (!err) {
+      console.log(`[WDA] Display affinity set to 0x${affinity.toString(16).padStart(2, '0')}`)
+      callback?.()
+    } else if (affinity === WDA_EXCLUDEFROMCAPTURE) {
+      // This Win10 build doesn't support WDA_EXCLUDEFROMCAPTURE — fall back to WDA_MONITOR
+      console.log('[WDA] WDA_EXCLUDEFROMCAPTURE unsupported — falling back to WDA_MONITOR')
+      win10UseFallback = true
+      callNativeAffinity(WDA_MONITOR, callback)
+    } else {
+      console.error('[WDA] SetWindowDisplayAffinity failed:', err?.message)
+      callback?.()
+    }
+  })
+}
+
+// Debounced apply — re-applies content protection after any window state change.
+// On Windows: uses Electron API (instant) + native API for initial enable.
+function scheduleContentProtection(delayMs = 0, useNative = false): void {
   if (cpTimer) clearTimeout(cpTimer)
   cpTimer = setTimeout(() => {
     cpTimer = null
     if (!mainWindow) return
+
+    // Electron API (synchronous, instant)
     mainWindow.setContentProtection(desiredContentProtection)
-    // macOS: call twice — once now, once after the next paint — to handle
-    // cases where the compositor resets NSWindowSharingNone after first apply.
+
+    // macOS: call twice — compositor can reset NSWindowSharingNone after first apply
     if (process.platform === 'darwin') {
-      setTimeout(() => {
-        if (!mainWindow) return
-        mainWindow.setContentProtection(desiredContentProtection)
-      }, 150)
+      setTimeout(() => mainWindow?.setContentProtection(desiredContentProtection), 150)
     }
-    // Windows 10 older builds: WDA_EXCLUDEFROMCAPTURE may not take effect on first call.
-    // Re-apply twice more at 100ms and 300ms to ensure it sticks across all Win10 versions.
-    if (process.platform === 'win32' && desiredContentProtection) {
-      setTimeout(() => { mainWindow?.setContentProtection(true) }, 100)
-      setTimeout(() => { mainWindow?.setContentProtection(true) }, 300)
+
+    // Windows native fallback — only on explicit enable/disable (not frequent re-apply events)
+    if (process.platform === 'win32' && useNative) {
+      if (desiredContentProtection) {
+        // If we already know this build needs WDA_MONITOR, skip the WDA_EXCLUDEFROMCAPTURE attempt
+        callNativeAffinity(win10UseFallback ? WDA_MONITOR : WDA_EXCLUDEFROMCAPTURE)
+      } else {
+        callNativeAffinity(WDA_NONE)
+      }
     }
   }, delayMs)
 }
@@ -144,21 +213,15 @@ ipcMain.on('window:setOverlayMode', (_event, flag: boolean) => {
   if (mainWindow) {
     mainWindow.setBackgroundColor(flag ? '#00000000' : '#1a1a2e')
     // Delay re-application — macOS resets NSWindowSharingType after setBackgroundColor.
-    // 150ms gives macOS time to finish its internal window reconfiguration first.
-    scheduleContentProtection(process.platform === 'darwin' ? 150 : 0)
+    // useNative=true for Windows so WDA_MONITOR fallback is re-applied after bg change.
+    scheduleContentProtection(process.platform === 'darwin' ? 150 : 0, process.platform === 'win32')
   }
 })
 
 ipcMain.on('window:setContentProtection', (_event, flag: boolean) => {
   desiredContentProtection = flag
-  // Windows: schedule at 0ms, then re-apply at 200ms and 500ms to ensure
-  // WDA_EXCLUDEFROMCAPTURE sticks on both Windows 10 (all builds) and Windows 11.
-  // Older Win10 builds reset the affinity more aggressively after window state changes.
-  scheduleContentProtection(process.platform === 'darwin' ? 150 : 0)
-  if (process.platform === 'win32' && flag) {
-    setTimeout(() => mainWindow?.setContentProtection(true), 200)
-    setTimeout(() => mainWindow?.setContentProtection(true), 500)
-  }
+  // useNative=true — this is the explicit enable/disable, must call Win32 API
+  scheduleContentProtection(process.platform === 'darwin' ? 150 : 0, process.platform === 'win32')
 })
 
 // Open external links
@@ -398,4 +461,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // Clean up temp PowerShell script
+  if (affinityScriptPath) {
+    try { require('fs').unlinkSync(affinityScriptPath) } catch { /* ignore */ }
+  }
 })

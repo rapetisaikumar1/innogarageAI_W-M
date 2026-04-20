@@ -25,7 +25,6 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createStartMenuShortcut: true
-  menuCategory: innogarage.ai
 mac:
   hardenedRuntime: false
   identity: null
