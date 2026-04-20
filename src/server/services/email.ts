@@ -1,24 +1,28 @@
-import nodemailer from 'nodemailer'
+import sgMail from '@sendgrid/mail'
 
-const GMAIL_USER = process.env.GMAIL_USER || 'rapetisaikumar1999@gmail.com'
+sgMail.setApiKey(process.env.SENDGRID_API_KEY || '')
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
-  }
-})
+// Use a non-Gmail FROM to pass Gmail DMARC — must be a verified sender in SendGrid
+const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
+const FROM = { email: FROM_EMAIL, name: 'innogarage.ai' }
 
 async function sendMail(to: string, subject: string, html: string, text: string): Promise<void> {
-  const info = await transporter.sendMail({
-    from: `innogarage.ai <${GMAIL_USER}>`,
+  if (!process.env.SENDGRID_API_KEY) {
+    throw new Error('SENDGRID_API_KEY is not configured on the server.')
+  }
+  const [res] = await sgMail.send({
+    from: FROM,
+    replyTo: FROM,
     to,
     subject,
     html,
-    text
+    text,
+    trackingSettings: {
+      clickTracking: { enable: false, enableText: false },
+      openTracking: { enable: false }
+    }
   })
-  console.log(`[email] Sent to ${to} — messageId ${info.messageId}`)
+  console.log(`[email] Sent to ${to} — status ${res.statusCode}`)
 }
 
 export async function sendVerificationEmail(
