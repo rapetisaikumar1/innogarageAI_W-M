@@ -1,19 +1,19 @@
-import { GoogleGenerativeAI, ChatSession } from '@google/generative-ai'
+import { GoogleGenAI, Chat } from '@google/genai'
 
-let genAI: GoogleGenerativeAI | null = null
+let genAI: GoogleGenAI | null = null
 
-function getGenAI(): GoogleGenerativeAI {
+function getGenAI(): GoogleGenAI {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) throw new Error('GEMINI_API_KEY is not set')
-    genAI = new GoogleGenerativeAI(apiKey)
+    genAI = new GoogleGenAI({ apiKey })
   }
   return genAI
 }
 
 // Per-user session data: chat + ctx + clean history (only completed Q&A pairs)
 interface UserSessionData {
-  chat: ChatSession
+  chat: Chat
   ctx: UserContext
   history: HistoryTurn[]
 }
@@ -94,17 +94,9 @@ export interface HistoryTurn {
 // Only keep last N turns in chat history to avoid token bloat
 const RECENT_TURNS = 6  // 3 Q&A pairs
 
-// Builds a fresh ChatSession from ctx + clean history (no side effects)
-function buildChatSession(ctx: UserContext, history: HistoryTurn[]): ChatSession {
+// Builds a fresh Chat from ctx + clean history (no side effects)
+function buildChatSession(ctx: UserContext, history: HistoryTurn[]): Chat {
   const ai = getGenAI()
-  const model = ai.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    systemInstruction: buildSystemPrompt(ctx),
-    generationConfig: {
-      // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 0 }
-    }
-  })
 
   // Build compact chat history:
   // - Older turns (beyond RECENT_TURNS) become a single compressed summary block
@@ -126,7 +118,14 @@ function buildChatSession(ctx: UserContext, history: HistoryTurn[]): ChatSession
     chatHistory.push({ role: 'model', parts: [{ text: turn.answer }] })
   }
 
-  return model.startChat({ history: chatHistory })
+  return ai.chats.create({
+    model: 'gemini-2.5-flash',
+    config: {
+      systemInstruction: buildSystemPrompt(ctx),
+      thinkingConfig: { thinkingBudget: 0 }
+    },
+    history: chatHistory
+  })
 }
 
 // Replaces a corrupted chat session with a fresh one built from stored clean history
@@ -191,8 +190,8 @@ export async function generateAnswer(userId: string, question: string): Promise<
   if (!data) {
     throw new Error('No active interview session. Please start an interview first.')
   }
-  const result = await retryWithBackoff(() => data.chat.sendMessage(question))
-  return result.response.text()
+  const result = await retryWithBackoff(() => data.chat.sendMessage({ message: question }))
+  return result.text ?? ''
 }
 
 export async function* generateAnswerStream(
@@ -223,12 +222,12 @@ export async function* generateAnswerStream(
     accumulatedAnswer = ''  // reset for this attempt
     try {
       const streamResult = await withTimeout(
-        data.chat.sendMessageStream(question),
+        data.chat.sendMessageStream({ message: question }),
         STREAM_TIMEOUT_MS,
         'sendMessageStream'
       )
-      for await (const chunk of streamResult.stream) {
-        const text = chunk.text()
+      for await (const chunk of streamResult) {
+        const text = chunk.text
         if (text) { chunksYielded++; accumulatedAnswer += text; yield text }
       }
       // Success — persist completed Q&A to clean history
@@ -262,11 +261,11 @@ export async function* generateAnswerStream(
   rebuildChatSession(userId)
   try {
     const fallback = await withTimeout(
-      retryWithBackoff(() => data.chat.sendMessage(question), 2),
+      retryWithBackoff(() => data.chat.sendMessage({ message: question }), 2),
       STREAM_TIMEOUT_MS,
       'sendMessage fallback'
     )
-    const text = fallback.response.text()
+    const text = fallback.text ?? ''
     if (text) {
       data.history.push({ question, answer: text })
       yield text

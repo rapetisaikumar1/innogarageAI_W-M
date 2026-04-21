@@ -1,20 +1,18 @@
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai'
+import { GoogleGenAI } from '@google/genai'
 
-let genAI: GoogleGenerativeAI | null = null
+let genAI: GoogleGenAI | null = null
 
-function getGenAI(): GoogleGenerativeAI {
+function getGenAI(): GoogleGenAI {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) throw new Error('GEMINI_API_KEY is not set')
-    genAI = new GoogleGenerativeAI(apiKey)
+    genAI = new GoogleGenAI({ apiKey })
   }
   return genAI
 }
 
-// Per-user stateless model instances — no chat history accumulation
-// All context is baked into the system prompt; stateless calls keep latency flat
-// regardless of how many screenshots have been analyzed in the session
-const codeAnalysisModels = new Map<string, GenerativeModel>()
+// Per-user system prompts (stateless model calls — context baked into systemInstruction)
+const codeAnalysisPrompts = new Map<string, string>()
 
 interface CodeAnalysisContext {
   name: string
@@ -106,16 +104,7 @@ function buildCodeAnalysisPrompt(ctx: CodeAnalysisContext): string {
 }
 
 export async function initCodeAnalysisSession(userId: string, ctx: CodeAnalysisContext): Promise<void> {
-  const ai = getGenAI()
-  const model = ai.getGenerativeModel({
-    model: 'gemini-2.5-flash-lite',  // lighter model for screen analysis — faster + lower quota usage
-    systemInstruction: buildCodeAnalysisPrompt(ctx),
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  })
-
-  codeAnalysisModels.set(userId, model)
+  codeAnalysisPrompts.set(userId, buildCodeAnalysisPrompt(ctx))
 }
 
 export interface CodeSuggestionResult {
@@ -130,8 +119,8 @@ export async function analyzeScreenContent(
   userId: string,
   base64Image: string
 ): Promise<CodeSuggestionResult> {
-  const model = codeAnalysisModels.get(userId)
-  if (!model) {
+  const systemInstruction = codeAnalysisPrompts.get(userId)
+  if (!systemInstruction) {
     throw new Error('No active code analysis session. Please start an interview first.')
   }
 
@@ -144,24 +133,30 @@ export async function analyzeScreenContent(
     imageData = dataUriMatch[2]
   }
 
-  const result = await model.generateContent([
-    {
-      inlineData: {
-        mimeType,
-        data: imageData
-      }
+  const ai = getGenAI()
+  const result = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-lite',
+    config: {
+      systemInstruction,
+      responseMimeType: 'application/json'
     },
-    {
-      text: [
-        'Read this screenshot carefully.',
-        '1. First, extract ALL visible text verbatim — problem statement, constraints, examples, existing code, class/method names, error messages.',
-        '2. Then provide a complete, correct, copy-paste-ready solution that fits the exact code structure visible on screen.',
-        '3. Return ONLY the JSON object as specified. No markdown, no extra text.'
-      ].join('\n')
-    }
-  ])
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { inlineData: { mimeType, data: imageData } },
+          { text: [
+            'Read this screenshot carefully.',
+            '1. First, extract ALL visible text verbatim — problem statement, constraints, examples, existing code, class/method names, error messages.',
+            '2. Then provide a complete, correct, copy-paste-ready solution that fits the exact code structure visible on screen.',
+            '3. Return ONLY the JSON object as specified. No markdown, no extra text.'
+          ].join('\n') }
+        ]
+      }
+    ]
+  })
 
-  let raw = result.response.text().trim()
+  let raw = (result.text ?? '').trim()
   console.log('[CodeAnalysis] raw Gemini response (first 500 chars):', raw.slice(0, 500))
 
   // Strip markdown code fences Gemini sometimes wraps around JSON
@@ -214,9 +209,9 @@ export async function analyzeScreenContent(
 }
 
 export function endCodeAnalysisSession(userId: string): void {
-  codeAnalysisModels.delete(userId)
+  codeAnalysisPrompts.delete(userId)
 }
 
 export function hasCodeAnalysisSession(userId: string): boolean {
-  return codeAnalysisModels.has(userId)
+  return codeAnalysisPrompts.has(userId)
 }
