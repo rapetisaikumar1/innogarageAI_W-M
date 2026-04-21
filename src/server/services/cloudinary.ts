@@ -1,5 +1,6 @@
 import { v2 as cloudinary } from 'cloudinary'
 import https from 'https'
+import zlib from 'zlib'
 
 let configured = false
 
@@ -14,107 +15,71 @@ function ensureConfig(): void {
   }
 }
 
-// Download a Cloudinary raw resource using the Admin API with Basic Auth.
-// This bypasses CDN access control restrictions entirely.
+// Minimal ZIP local-file extractor — reads first file entry from a ZIP buffer.
+// Handles both DEFLATE (method 8) and STORED (method 0) entries.
+function extractFirstFileFromZip(buf: Buffer): Buffer {
+  // Local file header signature: 0x04034b50 (little-endian: 50 4b 03 04)
+  const sig = Buffer.from([0x50, 0x4b, 0x03, 0x04])
+  const idx = buf.indexOf(sig)
+  if (idx === -1) throw new Error('ZIP: no local file header found')
+  const method = buf.readUInt16LE(idx + 8)
+  const compressedSize = buf.readUInt32LE(idx + 18)
+  const filenameLen = buf.readUInt16LE(idx + 26)
+  const extraLen = buf.readUInt16LE(idx + 28)
+  const dataStart = idx + 30 + filenameLen + extraLen
+  const compressedData = buf.slice(dataStart, dataStart + compressedSize)
+  if (method === 0) return compressedData // STORED
+  if (method === 8) return zlib.inflateRawSync(compressedData) // DEFLATE
+  throw new Error(`ZIP: unsupported compression method ${method}`)
+}
+
+// Download a Cloudinary raw resource via the Archive Admin API.
+// The CDN URL (res.cloudinary.com) is blocked from Railway datacenter IPs,
+// but api.cloudinary.com (Admin API) works fine with Basic Auth.
+// We generate a signed archive URL, download the ZIP, and extract the file.
 export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buffer> {
   ensureConfig()
 
   let publicId = publicUrlOrId
-  let version: number | undefined
-  const match = publicUrlOrId.match(/\/upload\/(?:v(\d+)\/)?(.+)$/)
-  if (match) {
-    version = match[1] ? parseInt(match[1], 10) : undefined
-    publicId = match[2]
-  }
-
-  const cfg = cloudinary.config()
-  const credentials = Buffer.from(`${cfg.api_key}:${cfg.api_secret}`).toString('base64')
-  const url = `https://api.cloudinary.com/v1_1/${cfg.cloud_name}/resources/raw/upload/${publicId.split('/').map(encodeURIComponent).join('/')}`
+  const match = publicUrlOrId.match(/\/upload\/(?:v\d+\/)?(.+)$/)
+  if (match) publicId = match[1]
 
   console.log(`[Cloudinary] downloadCloudinaryRaw — publicId: ${publicId}`)
-  console.log(`[Cloudinary] Admin API URL: ${url}`)
 
-  // Step 1: get resource metadata (secure_url + access_mode)
-  const meta = await new Promise<{ secure_url: string; access_mode: string }>((resolve, reject) => {
-    https.get(url, { headers: { Authorization: `Basic ${credentials}` } }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (c: Buffer) => chunks.push(c))
-      res.on('end', () => {
-        const body = Buffer.concat(chunks).toString()
-        console.log(`[Cloudinary] resource metadata status=${res.statusCode} body=${body.slice(0, 300)}`)
-        if (res.statusCode !== 200) return reject(new Error(`Admin API status ${res.statusCode}`))
-        try { resolve(JSON.parse(body)) } catch (e) { reject(new Error('Failed to parse Cloudinary metadata')) }
-      })
-      res.on('error', reject)
-    }).on('error', reject)
+  // download_archive_url generates a signed URL to api.cloudinary.com (not CDN)
+  // that returns a ZIP archive of the requested resource.
+  const archiveUrl = cloudinary.utils.download_archive_url({
+    public_ids: [publicId],
+    resource_type: 'raw',
+    type: 'upload',
+    target_format: 'zip',
+    expires_at: Math.floor(Date.now() / 1000) + 300
+  })
+  console.log(`[Cloudinary] archive URL (first 100): ${(archiveUrl as string).slice(0, 100)}`)
+
+  // Fetch the ZIP via Admin API
+  const zipBuf = await new Promise<Buffer>((resolve, reject) => {
+    const get = (u: string) => {
+      const urlObj = new URL(u)
+      https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search }, (res) => {
+        console.log(`[Cloudinary] archive fetch → status=${res.statusCode} content-type=${res.headers['content-type']} size=${res.headers['content-length'] || '?'}`)
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return get(res.headers.location)
+        }
+        if (res.statusCode && res.statusCode >= 400) return reject(new Error(`Archive HTTP ${res.statusCode}`))
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve(Buffer.concat(chunks)))
+        res.on('error', reject)
+      }).on('error', reject)
+    }
+    get(archiveUrl as string)
   })
 
-  console.log(`[Cloudinary] resource secure_url: ${meta.secure_url} | access_mode: ${meta.access_mode}`)
-
-  // Step 2: download the actual file — try multiple strategies
-  // Strategy 1: CDN URL with no auth (works if resource is public)
-  // Strategy 2: CDN URL with Basic Auth header
-  // Strategy 3: CDN URL with signed path (sign_url)
-  const secureUrl: string = meta.secure_url
-
-  const tryFetch = (u: string, headers: Record<string, string> = {}): Promise<Buffer> => {
-    return new Promise<Buffer>((resolve, reject) => {
-      const get = (fetchUrl: string) => {
-        const urlObj = new URL(fetchUrl)
-        const reqHeaders: Record<string, string> = {
-          'User-Agent': 'InnoGarageServer/1.0',
-          ...headers
-        }
-        https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: reqHeaders }, (res) => {
-          const contentType = res.headers['content-type'] || ''
-          console.log(`[Cloudinary] fetch ${fetchUrl.slice(0, 80)} → status=${res.statusCode} content-type=${contentType} size=${res.headers['content-length'] || '?'}`)
-          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return get(res.headers.location)
-          }
-          // Cloudinary returns 401 with the actual PDF body for access-controlled resources.
-          // Accept 401 if content-type is application/pdf (the body IS the file).
-          const isPdfBody = contentType.includes('application/pdf') || contentType.includes('application/octet-stream')
-          if (res.statusCode && res.statusCode >= 400 && !isPdfBody) {
-            return reject(new Error(`HTTP ${res.statusCode}`))
-          }
-          const chunks: Buffer[] = []
-          res.on('data', (c: Buffer) => chunks.push(c))
-          res.on('end', () => {
-            const buf = Buffer.concat(chunks)
-            console.log(`[Cloudinary] downloaded ${buf.length} bytes, first4=${buf.slice(0, 4).toString()}`)
-            resolve(buf)
-          })
-          res.on('error', reject)
-        }).on('error', reject)
-      }
-      get(u)
-    })
-  }
-
-  // Try 1: plain CDN URL
-  try {
-    const buf = await tryFetch(secureUrl)
-    console.log(`[Cloudinary] Strategy 1 (plain) succeeded — bytes=${buf.length}`)
-    return buf
-  } catch (e1) {
-    console.log(`[Cloudinary] Strategy 1 failed: ${(e1 as Error).message}`)
-  }
-
-  // Try 2: CDN URL + Basic Auth header
-  try {
-    const buf = await tryFetch(secureUrl, { Authorization: `Basic ${credentials}` })
-    console.log(`[Cloudinary] Strategy 2 (basic auth) succeeded — bytes=${buf.length}`)
-    return buf
-  } catch (e2) {
-    console.log(`[Cloudinary] Strategy 2 failed: ${(e2 as Error).message}`)
-  }
-
-  // Try 3: SDK signed CDN URL
-  const signedUrl = cloudinary.url(publicId, { resource_type: 'raw', type: 'upload', sign_url: true, secure: true, version })
-  console.log(`[Cloudinary] Strategy 3 signed URL: ${signedUrl}`)
-  const buf = await tryFetch(signedUrl)
-  console.log(`[Cloudinary] Strategy 3 (signed CDN) succeeded — bytes=${buf.length}`)
-  return buf
+  console.log(`[Cloudinary] ZIP downloaded — ${zipBuf.length} bytes`)
+  const fileBuf = extractFirstFileFromZip(zipBuf)
+  console.log(`[Cloudinary] extracted file — ${fileBuf.length} bytes, first4=${fileBuf.slice(0, 4).toString()}`)
+  return fileBuf
 }
 
 export async function uploadResume(
