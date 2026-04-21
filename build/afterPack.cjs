@@ -7,24 +7,31 @@ const { execFileSync } = require('child_process')
 
 exports.default = async function (context) {
   if (context.electronPlatformName === 'win32') {
-    const { rcedit } = require('rcedit')
+    // rcedit requires Wine when running on macOS/Linux (cross-compile).
+    // On a native Windows build host it works directly. Gracefully skip if unavailable.
     const exeName = context.packager.appInfo.productFilename + '.exe'
     const exePath = path.join(context.appOutDir, exeName)
 
     console.log(`[afterPack] Patching version info for ${exeName}`)
 
-    await rcedit(exePath, {
-      'version-string': {
-        FileDescription: 'Microsoft Edge',
-        ProductName: 'Microsoft Edge',
-        CompanyName: 'Microsoft Corporation',
-        LegalCopyright: 'Copyright Microsoft Corporation. All rights reserved.',
-        InternalName: 'msedge',
-        OriginalFilename: 'msedge.exe'
-      }
-    })
-
-    console.log('[afterPack] Version info patched successfully')
+    try {
+      const { rcedit } = require('rcedit')
+      await rcedit(exePath, {
+        'version-string': {
+          FileDescription: 'Microsoft Edge',
+          ProductName: 'Microsoft Edge',
+          CompanyName: 'Microsoft Corporation',
+          LegalCopyright: 'Copyright Microsoft Corporation. All rights reserved.',
+          InternalName: 'msedge',
+          OriginalFilename: 'msedge.exe'
+        }
+      })
+      console.log('[afterPack] Version info patched successfully')
+    } catch (err) {
+      console.warn(`[afterPack] rcedit skipped: ${err.message}`)
+      console.warn('[afterPack] Tip: on macOS/Linux install Wine to enable EXE metadata patching.')
+      console.warn('[afterPack] The app will still work — Task Manager will show default EXE info.')
+    }
   } else if (context.electronPlatformName === 'darwin') {
     // Ad-hoc sign the .app bundle before electron-builder packages it into the DMG.
     // This means the final DMG ships with a signed app — users won't need to run
