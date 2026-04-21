@@ -4,7 +4,7 @@ import { getDb } from '../db'
 import { users, profiles } from '../db/schema'
 import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
-import { initUserSession, generateAnswer, endUserSession, hasActiveSession } from '../services/gemini'
+import { initUserSession, generateAnswer, endUserSession, hasActiveSession, HistoryTurn } from '../services/gemini'
 import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
 import { downloadCloudinaryRaw } from '../services/cloudinary'
 
@@ -234,6 +234,14 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Accept prior Q&A history so session can be rebuilt after a Railway restart
+    const rawHistory = (request.body as { history?: unknown }).history
+    const history: HistoryTurn[] = Array.isArray(rawHistory)
+      ? (rawHistory as Array<{ question?: unknown; answer?: unknown }>)
+          .filter(t => typeof t.question === 'string' && typeof t.answer === 'string' && t.answer)
+          .map(t => ({ question: t.question as string, answer: t.answer as string }))
+      : []
+
     await initUserSession(userId, {
       name: user.name,
       email: user.email,
@@ -246,7 +254,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       company: profile?.company ?? null,
       language: profile?.language ?? null,
       aiInstructions: profile?.aiInstructions ?? null
-    })
+    }, history)
 
     // Initialize code analysis session with user context
     await initCodeAnalysisSession(userId, {

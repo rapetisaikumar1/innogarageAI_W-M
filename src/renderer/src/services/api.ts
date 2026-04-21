@@ -175,10 +175,10 @@ export const api = {
     }>('/plans/active'),
 
   // Interview
-  interviewStart: () =>
+  interviewStart: (history?: Array<{ question: string; answer: string }>) =>
     request<{ message: string; active: boolean }>('/interview/start', {
       method: 'POST',
-      body: '{}'
+      body: JSON.stringify({ history: history ?? [] })
     }),
 
   interviewAsk: (text: string) =>

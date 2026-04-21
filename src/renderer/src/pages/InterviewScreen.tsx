@@ -91,7 +91,12 @@ export default function InterviewScreen(): React.JSX.Element {
         } catch (err) {
           const msg = (err as Error).message || ''
           if (msg.includes('No active interview session')) {
-            await api.interviewStart()
+            // Rebuild session with full conversation history so context is preserved
+            const { qaPairs } = useInterviewStore.getState()
+            const history = qaPairs
+              .filter(p => p.answer)
+              .map(p => ({ question: p.question, answer: p.answer }))
+            await api.interviewStart(history)
             await doAsk()
           } else {
             throw err

@@ -171,8 +171,12 @@ function buildSystemPrompt(ctx: UserContext): string {
   return lines.join('\n')
 }
 
-export async function initUserSession(userId: string, ctx: UserContext): Promise<void> {
-  // ── DEBUG: log what context was received ────────────────────────────────
+export interface HistoryTurn {
+  question: string
+  answer: string
+}
+
+export async function initUserSession(userId: string, ctx: UserContext, history: HistoryTurn[] = []): Promise<void> {
   console.log('[Gemini] initUserSession', {
     userId,
     name: ctx.name,
@@ -180,7 +184,8 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
     resumeTextLength: ctx.resumeText?.length ?? 0,
     hasResumeUrl: !!ctx.resumeUrl,
     hasJobDescription: !!ctx.jobDescription,
-    jobRole: ctx.jobRole
+    jobRole: ctx.jobRole,
+    historyTurns: history.length
   })
 
   const ai = getGenAI()
@@ -193,10 +198,13 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
     }
   })
 
-  const chat = model.startChat({
-    history: []
-  })
+  // Rebuild conversation history from prior Q&A pairs (e.g. after Railway restart)
+  const chatHistory = history.flatMap(turn => [
+    { role: 'user' as const, parts: [{ text: turn.question }] },
+    { role: 'model' as const, parts: [{ text: turn.answer }] }
+  ])
 
+  const chat = model.startChat({ history: chatHistory })
   userSessions.set(userId, chat)
 }
 
