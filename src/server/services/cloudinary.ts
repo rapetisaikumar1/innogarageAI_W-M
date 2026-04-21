@@ -107,6 +107,7 @@ export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buff
   const buf = await tryFetch(signedUrl)
   console.log(`[Cloudinary] Strategy 3 (signed CDN) succeeded — bytes=${buf.length}`)
   return buf
+}
 
 export async function uploadResume(
   fileBuffer: Buffer,
