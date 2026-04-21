@@ -20,8 +20,12 @@ export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buff
   ensureConfig()
 
   let publicId = publicUrlOrId
-  const match = publicUrlOrId.match(/\/upload\/(?:v\d+\/)?(.+)$/)
-  if (match) publicId = match[1]
+  let version: number | undefined
+  const match = publicUrlOrId.match(/\/upload\/(?:v(\d+)\/)?(.+)$/)
+  if (match) {
+    version = match[1] ? parseInt(match[1], 10) : undefined
+    publicId = match[2]
+  }
 
   const cfg = cloudinary.config()
   const credentials = Buffer.from(`${cfg.api_key}:${cfg.api_secret}`).toString('base64')
@@ -47,33 +51,62 @@ export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buff
 
   console.log(`[Cloudinary] resource secure_url: ${meta.secure_url} | access_mode: ${meta.access_mode}`)
 
-  // Step 2: download using the Admin-API-based download endpoint with Basic Auth
-  const downloadUrl = `https://api.cloudinary.com/v1_1/${cfg.cloud_name}/raw/download?public_id=${encodeURIComponent(publicId)}`
+  // Step 2: download the actual file — try multiple strategies
+  // Strategy 1: CDN URL with no auth (works if resource is public)
+  // Strategy 2: CDN URL with Basic Auth header
+  // Strategy 3: CDN URL with signed path (sign_url)
+  const secureUrl: string = meta.secure_url
 
-  return new Promise<Buffer>((resolve, reject) => {
-    const get = (u: string) => {
-      const urlObj = new URL(u)
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + urlObj.search,
-        headers: { Authorization: `Basic ${credentials}` }
+  const tryFetch = (u: string, headers: Record<string, string> = {}): Promise<Buffer> => {
+    return new Promise<Buffer>((resolve, reject) => {
+      const get = (fetchUrl: string) => {
+        const urlObj = new URL(fetchUrl)
+        const reqHeaders: Record<string, string> = {
+          'User-Agent': 'InnoGarageServer/1.0',
+          ...headers
+        }
+        https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: reqHeaders }, (res) => {
+          console.log(`[Cloudinary] fetch ${fetchUrl.slice(0, 80)} → status=${res.statusCode} www-auth=${res.headers['www-authenticate'] || 'none'}`)
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return get(res.headers.location)
+          }
+          if (res.statusCode && res.statusCode >= 400) {
+            return reject(new Error(`HTTP ${res.statusCode}`))
+          }
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => resolve(Buffer.concat(chunks)))
+          res.on('error', reject)
+        }).on('error', reject)
       }
-      https.get(options, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return get(res.headers.location)
-        }
-        if (res.statusCode && res.statusCode >= 400) {
-          return reject(new Error(`HTTP ${res.statusCode} downloading resource`))
-        }
-        const chunks: Buffer[] = []
-        res.on('data', (c: Buffer) => chunks.push(c))
-        res.on('end', () => resolve(Buffer.concat(chunks)))
-        res.on('error', reject)
-      }).on('error', reject)
-    }
-    get(downloadUrl)
-  })
-}
+      get(u)
+    })
+  }
+
+  // Try 1: plain CDN URL
+  try {
+    const buf = await tryFetch(secureUrl)
+    console.log(`[Cloudinary] Strategy 1 (plain) succeeded — bytes=${buf.length}`)
+    return buf
+  } catch (e1) {
+    console.log(`[Cloudinary] Strategy 1 failed: ${(e1 as Error).message}`)
+  }
+
+  // Try 2: CDN URL + Basic Auth header
+  try {
+    const buf = await tryFetch(secureUrl, { Authorization: `Basic ${credentials}` })
+    console.log(`[Cloudinary] Strategy 2 (basic auth) succeeded — bytes=${buf.length}`)
+    return buf
+  } catch (e2) {
+    console.log(`[Cloudinary] Strategy 2 failed: ${(e2 as Error).message}`)
+  }
+
+  // Try 3: SDK signed CDN URL
+  const signedUrl = cloudinary.url(publicId, { resource_type: 'raw', type: 'upload', sign_url: true, secure: true, version })
+  console.log(`[Cloudinary] Strategy 3 signed URL: ${signedUrl}`)
+  const buf = await tryFetch(signedUrl)
+  console.log(`[Cloudinary] Strategy 3 (signed CDN) succeeded — bytes=${buf.length}`)
+  return buf
 
 export async function uploadResume(
   fileBuffer: Buffer,
