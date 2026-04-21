@@ -60,6 +60,7 @@ function buildSystemPrompt(ctx: UserContext): string {
 
   // ── Resume ────────────────────────────────────────────────────
   if (ctx.resumeText?.trim()) {
+    console.log(`[Gemini] buildSystemPrompt — resumeText present, length=${ctx.resumeText.trim().length}, injecting into prompt`)
     lines.push('## Your Resume (MEMORIZE THIS — it is your life story)')
     lines.push('This is YOUR resume. Every fact here is YOUR personal experience. When answering ANY question, reference specific details from this resume: project names, tech stacks, company names, team sizes, accomplishments, and metrics. NEVER give generic answers when your resume has relevant details.')
     lines.push('')
@@ -68,9 +69,12 @@ function buildSystemPrompt(ctx: UserContext): string {
     if (ctx.resumeText.trim().length > 12000) lines.push('... [resume truncated]')
     lines.push('')
   } else if (ctx.resumeUrl) {
+    console.log('[Gemini] buildSystemPrompt — NO resumeText, only resumeUrl stored. Gemini has no resume content!')
     lines.push('## Your Resume')
     lines.push('You have a resume on file. Answer based on your professional background.')
     lines.push('')
+  } else {
+    console.log('[Gemini] buildSystemPrompt — NO resumeText AND no resumeUrl. Gemini has zero resume context!')
   }
 
   // ── AI Instructions / User Prompt ────────────────────────────
@@ -168,6 +172,17 @@ function buildSystemPrompt(ctx: UserContext): string {
 }
 
 export async function initUserSession(userId: string, ctx: UserContext): Promise<void> {
+  // ── DEBUG: log what context was received ────────────────────────────────
+  console.log('[Gemini] initUserSession', {
+    userId,
+    name: ctx.name,
+    hasResumeText: !!ctx.resumeText,
+    resumeTextLength: ctx.resumeText?.length ?? 0,
+    hasResumeUrl: !!ctx.resumeUrl,
+    hasJobDescription: !!ctx.jobDescription,
+    jobRole: ctx.jobRole
+  })
+
   const ai = getGenAI()
   const model = ai.getGenerativeModel({
     model: 'gemini-2.5-flash',
@@ -221,8 +236,10 @@ export async function generateAnswer(userId: string, question: string): Promise<
 export async function* generateAnswerStream(userId: string, question: string): AsyncGenerator<string> {
   const session = userSessions.get(userId)
   if (!session) {
+    console.log(`[Gemini] generateAnswerStream — NO SESSION for userId=${userId}`)
     throw new Error('No active interview session. Please start an interview first.')
   }
+  console.log(`[Gemini] generateAnswerStream — sending question: "${question.slice(0, 80)}..."`)
 
   const streamResult = await retryWithBackoff(() => session.sendMessageStream(question))
   try {

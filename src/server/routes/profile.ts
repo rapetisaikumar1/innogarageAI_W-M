@@ -107,6 +107,7 @@ export async function profileRoutes(app: FastifyInstance): Promise<void> {
     const fileBuffer = Buffer.concat(chunks)
 
     const resumeText = await extractResumeText(fileBuffer, data.mimetype)
+    console.log(`[Profile] resume upload — mimetype=${data.mimetype} fileSize=${fileBuffer.length}B extractedTextLength=${resumeText.length}`)
     const { url } = await uploadResume(fileBuffer, data.filename)
 
     const [updated] = await getDb()

@@ -202,6 +202,17 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: 'User not found' })
     }
 
+    // ── DEBUG: log what DB returned for this user ──────────────────────────
+    request.log.info({
+      userId,
+      profileFound: !!profile,
+      hasResumeText: !!profile?.resumeText,
+      resumeTextLength: profile?.resumeText?.length ?? 0,
+      hasResumeUrl: !!profile?.resumeUrl,
+      hasJobDescription: !!profile?.jobDescription,
+      jobRole: profile?.jobRole ?? null
+    }, '[DEBUG] /interview/start — profile data from DB')
+
     await initUserSession(userId, {
       name: user.name,
       email: user.email,
