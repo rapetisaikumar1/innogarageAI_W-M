@@ -11,8 +11,14 @@ function getGenAI(): GoogleGenerativeAI {
   return genAI
 }
 
-// Per-user chat sessions keyed by userId
-const userSessions = new Map<string, ChatSession>()
+// Per-user session data: chat + ctx + clean history (only completed Q&A pairs)
+interface UserSessionData {
+  chat: ChatSession
+  ctx: UserContext
+  history: HistoryTurn[]
+}
+
+const userSessions = new Map<string, UserSessionData>()
 
 interface UserContext {
   name: string
@@ -88,16 +94,8 @@ export interface HistoryTurn {
 // Only keep last N turns in chat history to avoid token bloat
 const RECENT_TURNS = 6  // 3 Q&A pairs
 
-export async function initUserSession(userId: string, ctx: UserContext, history: HistoryTurn[] = []): Promise<void> {
-  console.log('[Gemini] initUserSession', {
-    userId,
-    name: ctx.name,
-    hasResumeText: !!ctx.resumeText,
-    resumeTextLength: ctx.resumeText?.length ?? 0,
-    jobRole: ctx.jobRole,
-    historyTurns: history.length
-  })
-
+// Builds a fresh ChatSession from ctx + clean history (no side effects)
+function buildChatSession(ctx: UserContext, history: HistoryTurn[]): ChatSession {
   const ai = getGenAI()
   const model = ai.getGenerativeModel({
     model: 'gemini-2.5-flash',
@@ -128,8 +126,28 @@ export async function initUserSession(userId: string, ctx: UserContext, history:
     chatHistory.push({ role: 'model', parts: [{ text: turn.answer }] })
   }
 
-  const chat = model.startChat({ history: chatHistory })
-  userSessions.set(userId, chat)
+  return model.startChat({ history: chatHistory })
+}
+
+// Replaces a corrupted chat session with a fresh one built from stored clean history
+function rebuildChatSession(userId: string): void {
+  const data = userSessions.get(userId)
+  if (!data) return
+  data.chat = buildChatSession(data.ctx, data.history)
+}
+
+export async function initUserSession(userId: string, ctx: UserContext, history: HistoryTurn[] = []): Promise<void> {
+  console.log('[Gemini] initUserSession', {
+    userId,
+    name: ctx.name,
+    hasResumeText: !!ctx.resumeText,
+    resumeTextLength: ctx.resumeText?.length ?? 0,
+    jobRole: ctx.jobRole,
+    historyTurns: history.length
+  })
+
+  const chat = buildChatSession(ctx, history)
+  userSessions.set(userId, { chat, ctx, history: [...history] })
 }
 
 function isTransient(err: unknown): boolean {
@@ -169,11 +187,11 @@ const MAX_STREAM_ATTEMPTS = 3
 const STREAM_BACKOFF_MS = [0, 600, 1500]
 
 export async function generateAnswer(userId: string, question: string): Promise<string> {
-  const session = userSessions.get(userId)
-  if (!session) {
+  const data = userSessions.get(userId)
+  if (!data) {
     throw new Error('No active interview session. Please start an interview first.')
   }
-  const result = await retryWithBackoff(() => session.sendMessage(question))
+  const result = await retryWithBackoff(() => data.chat.sendMessage(question))
   return result.response.text()
 }
 
@@ -182,31 +200,40 @@ export async function* generateAnswerStream(
   question: string,
   utteranceId?: string
 ): AsyncGenerator<string> {
-  const session = userSessions.get(userId)
-  if (!session) {
+  const data = userSessions.get(userId)
+  if (!data) {
     throw new Error('No active interview session. Please start an interview first.')
   }
 
-  // Stream with exponential backoff retry
+  let accumulatedAnswer = ''
+
+  // Stream with exponential backoff retry — rebuild chat session on each retry
+  // to avoid using a corrupted session after a previous failure
   for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
     const delay = STREAM_BACKOFF_MS[attempt - 1] ?? 1500
     if (delay > 0) {
       console.warn(`[Gemini] stream retry attempt ${attempt}/${MAX_STREAM_ATTEMPTS} in ${delay}ms`, { userId, utteranceId })
       await new Promise(r => setTimeout(r, delay))
+      // Rebuild a fresh chat session from clean history before retrying
+      console.log('[Gemini] rebuilding chat session before retry', { userId, utteranceId, attempt })
+      rebuildChatSession(userId)
     }
 
     let chunksYielded = 0
+    accumulatedAnswer = ''  // reset for this attempt
     try {
       const streamResult = await withTimeout(
-        session.sendMessageStream(question),
+        data.chat.sendMessageStream(question),
         STREAM_TIMEOUT_MS,
         'sendMessageStream'
       )
       for await (const chunk of streamResult.stream) {
         const text = chunk.text()
-        if (text) { chunksYielded++; yield text }
+        if (text) { chunksYielded++; accumulatedAnswer += text; yield text }
       }
-      return  // success
+      // Success — persist completed Q&A to clean history
+      data.history.push({ question, answer: accumulatedAnswer })
+      return
 
     } catch (err) {
       console.error('[Gemini] stream attempt failed', {
@@ -217,25 +244,33 @@ export async function* generateAnswerStream(
         error: (err as Error).message,
         stack: ((err as Error).stack ?? '').split('\n').slice(0, 5).join('\n')
       })
-      // Partial text already sent — cannot retry cleanly
-      if (chunksYielded > 0) throw err
+      // Partial text already sent — rebuild for next question but can't retry this one
+      if (chunksYielded > 0) {
+        rebuildChatSession(userId)
+        throw err
+      }
       // Permanent error — don't retry
       if (!isTransient(err)) throw err
-      // More attempts remaining — retry
+      // More attempts remaining — loop will rebuild session and retry
       if (attempt < MAX_STREAM_ATTEMPTS) continue
     }
   }
 
   // Non-streaming fallback — all stream attempts exhausted
+  // Rebuild once more so fallback uses a clean uncorrupted session
   console.warn('[Gemini] all stream attempts failed, falling back to sendMessage', { userId, utteranceId })
+  rebuildChatSession(userId)
   try {
     const fallback = await withTimeout(
-      retryWithBackoff(() => session.sendMessage(question), 2),
+      retryWithBackoff(() => data.chat.sendMessage(question), 2),
       STREAM_TIMEOUT_MS,
       'sendMessage fallback'
     )
     const text = fallback.response.text()
-    if (text) yield text
+    if (text) {
+      data.history.push({ question, answer: text })
+      yield text
+    }
   } catch (err) {
     console.error('[Gemini] non-streaming fallback also failed', {
       userId,
