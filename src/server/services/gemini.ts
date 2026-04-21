@@ -182,8 +182,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 const STREAM_TIMEOUT_MS = 15_000
-const MAX_STREAM_ATTEMPTS = 3
-const STREAM_BACKOFF_MS = [0, 600, 1500]
+const MAX_STREAM_ATTEMPTS = 2   // 1 attempt + 1 retry; persistent 503s fall through to flash-lite faster
+const STREAM_BACKOFF_MS = [0, 800, 1500]
 
 export async function generateAnswer(userId: string, question: string): Promise<string> {
   const data = userSessions.get(userId)
