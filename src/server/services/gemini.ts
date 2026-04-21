@@ -243,9 +243,26 @@ export async function* generateAnswerStream(
         error: (err as Error).message,
         stack: ((err as Error).stack ?? '').split('\n').slice(0, 5).join('\n')
       })
-      // Partial text already sent — rebuild for next question but can't retry this one
+      // Mid-stream failure — try to continue with fallback model so user gets a complete answer
       if (chunksYielded > 0) {
         rebuildChatSession(userId)
+        if (isTransient(err)) {
+          console.warn('[Gemini] mid-stream failure, attempting continuation with fallback model', {
+            userId, utteranceId, partialLength: accumulatedAnswer.length
+          })
+          try {
+            const continuation = yield* continueWithFallbackModel(data, question, accumulatedAnswer, utteranceId)
+            data.history.push({ question, answer: accumulatedAnswer + continuation })
+            return
+          } catch (contErr) {
+            console.error('[Gemini] continuation also failed', {
+              userId, utteranceId, error: (contErr as Error).message
+            })
+            // Persist partial answer so future history is consistent
+            data.history.push({ question, answer: accumulatedAnswer })
+            return  // user already saw partial answer; don't surface error
+          }
+        }
         throw err
       }
       // Permanent error — don't retry
@@ -269,15 +286,113 @@ export async function* generateAnswerStream(
     if (text) {
       data.history.push({ question, answer: text })
       yield text
+      return
     }
   } catch (err) {
-    console.error('[Gemini] non-streaming fallback also failed', {
-      userId,
-      utteranceId,
-      error: (err as Error).message
+    console.warn('[Gemini] flash fallback also failed, trying flash-lite', {
+      userId, utteranceId, error: (err as Error).message
+    })
+  }
+
+  // Last resort — gemini-2.5-flash-lite (higher quota, rarely overloaded)
+  try {
+    const liteText = yield* askFallbackModel(data, question, utteranceId)
+    if (liteText) {
+      data.history.push({ question, answer: liteText })
+      return
+    }
+    throw new Error('Empty response from fallback model')
+  } catch (err) {
+    console.error('[Gemini] flash-lite fallback also failed', {
+      userId, utteranceId, error: (err as Error).message
     })
     throw new Error('The AI service is temporarily unavailable. Please try again.')
   }
+}
+
+// Streams a one-shot answer from gemini-2.5-flash-lite using the same system prompt + history
+async function* askFallbackModel(
+  data: UserSessionData,
+  question: string,
+  utteranceId?: string
+): AsyncGenerator<string, string> {
+  const ai = getGenAI()
+  const contents = buildContentsFromHistory(data.history)
+  contents.push({ role: 'user', parts: [{ text: question }] })
+
+  console.log('[Gemini] using flash-lite fallback', { utteranceId, historyTurns: data.history.length })
+  const stream = await withTimeout(
+    ai.models.generateContentStream({
+      model: 'gemini-2.5-flash-lite',
+      config: {
+        systemInstruction: buildSystemPrompt(data.ctx),
+        thinkingConfig: { thinkingBudget: 0 }
+      },
+      contents
+    }),
+    STREAM_TIMEOUT_MS,
+    'flash-lite generateContentStream'
+  )
+
+  let full = ''
+  for await (const chunk of stream) {
+    const text = chunk.text
+    if (text) { full += text; yield text }
+  }
+  return full
+}
+
+// Continues a partial answer using flash-lite, prompting it to pick up where the stream broke
+async function* continueWithFallbackModel(
+  data: UserSessionData,
+  question: string,
+  partialAnswer: string,
+  utteranceId?: string
+): AsyncGenerator<string, string> {
+  const ai = getGenAI()
+  const contents = buildContentsFromHistory(data.history)
+  contents.push({ role: 'user', parts: [{ text: question }] })
+  contents.push({ role: 'model', parts: [{ text: partialAnswer }] })
+  contents.push({ role: 'user', parts: [{ text: 'Please continue your previous response from exactly where it stopped. Do not repeat any text. Just continue mid-sentence if needed and finish your answer.' }] })
+
+  console.log('[Gemini] continuing with flash-lite', { utteranceId, partialLength: partialAnswer.length })
+  const stream = await withTimeout(
+    ai.models.generateContentStream({
+      model: 'gemini-2.5-flash-lite',
+      config: {
+        systemInstruction: buildSystemPrompt(data.ctx),
+        thinkingConfig: { thinkingBudget: 0 }
+      },
+      contents
+    }),
+    STREAM_TIMEOUT_MS,
+    'flash-lite continuation'
+  )
+
+  let full = ''
+  for await (const chunk of stream) {
+    const text = chunk.text
+    if (text) { full += text; yield text }
+  }
+  return full
+}
+
+// Reuses the same compact-history approach as buildChatSession
+function buildContentsFromHistory(history: HistoryTurn[]): { role: 'user' | 'model'; parts: { text: string }[] }[] {
+  const contents: { role: 'user' | 'model'; parts: { text: string }[] }[] = []
+  if (history.length > RECENT_TURNS) {
+    const older = history.slice(0, history.length - RECENT_TURNS)
+    const summaryLines = older
+      .map(t => `Q: ${t.question.slice(0, 120)}\nA: ${t.answer.slice(0, 300)}`)
+      .join('\n---\n')
+    contents.push({ role: 'user', parts: [{ text: `[Earlier conversation summary]\n${summaryLines}` }] })
+    contents.push({ role: 'model', parts: [{ text: 'Understood, I have that context from our earlier discussion.' }] })
+  }
+  for (const turn of history.slice(-RECENT_TURNS)) {
+    contents.push({ role: 'user', parts: [{ text: turn.question }] })
+    contents.push({ role: 'model', parts: [{ text: turn.answer }] })
+  }
+  return contents
 }
 
 export function endUserSession(userId: string): void {
