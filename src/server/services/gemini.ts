@@ -264,7 +264,7 @@ export async function* generateAnswerStream(userId: string, question: string): A
       }
       // No content sent yet — safe to retry
       if (!isTransient(err) || attempt === MAX_ATTEMPTS) throw err
-      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 16000)
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 2000)
       console.warn(`[Gemini] transient error on attempt ${attempt}, retrying in ${delay}ms:`, (err as Error).message)
       await new Promise(r => setTimeout(r, delay))
     }
