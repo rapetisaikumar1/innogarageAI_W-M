@@ -1,4 +1,5 @@
 import { v2 as cloudinary } from 'cloudinary'
+import https from 'https'
 
 let configured = false
 
@@ -11,6 +12,67 @@ function ensureConfig(): void {
     })
     configured = true
   }
+}
+
+// Download a Cloudinary raw resource using the Admin API with Basic Auth.
+// This bypasses CDN access control restrictions entirely.
+export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buffer> {
+  ensureConfig()
+
+  let publicId = publicUrlOrId
+  const match = publicUrlOrId.match(/\/upload\/(?:v\d+\/)?(.+)$/)
+  if (match) publicId = match[1]
+
+  const cfg = cloudinary.config()
+  const credentials = Buffer.from(`${cfg.api_key}:${cfg.api_secret}`).toString('base64')
+  const url = `https://api.cloudinary.com/v1_1/${cfg.cloud_name}/resources/raw/upload/${publicId.split('/').map(encodeURIComponent).join('/')}`
+
+  console.log(`[Cloudinary] downloadCloudinaryRaw — publicId: ${publicId}`)
+  console.log(`[Cloudinary] Admin API URL: ${url}`)
+
+  // Step 1: get resource metadata (secure_url + access_mode)
+  const meta = await new Promise<{ secure_url: string; access_mode: string }>((resolve, reject) => {
+    https.get(url, { headers: { Authorization: `Basic ${credentials}` } }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString()
+        console.log(`[Cloudinary] resource metadata status=${res.statusCode} body=${body.slice(0, 300)}`)
+        if (res.statusCode !== 200) return reject(new Error(`Admin API status ${res.statusCode}`))
+        try { resolve(JSON.parse(body)) } catch (e) { reject(new Error('Failed to parse Cloudinary metadata')) }
+      })
+      res.on('error', reject)
+    }).on('error', reject)
+  })
+
+  console.log(`[Cloudinary] resource secure_url: ${meta.secure_url} | access_mode: ${meta.access_mode}`)
+
+  // Step 2: download using the Admin-API-based download endpoint with Basic Auth
+  const downloadUrl = `https://api.cloudinary.com/v1_1/${cfg.cloud_name}/raw/download?public_id=${encodeURIComponent(publicId)}`
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const get = (u: string) => {
+      const urlObj = new URL(u)
+      const options = {
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        headers: { Authorization: `Basic ${credentials}` }
+      }
+      https.get(options, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return get(res.headers.location)
+        }
+        if (res.statusCode && res.statusCode >= 400) {
+          return reject(new Error(`HTTP ${res.statusCode} downloading resource`))
+        }
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve(Buffer.concat(chunks)))
+        res.on('error', reject)
+      }).on('error', reject)
+    }
+    get(downloadUrl)
+  })
 }
 
 export async function uploadResume(

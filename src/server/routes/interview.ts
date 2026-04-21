@@ -8,7 +8,7 @@ import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
 import { initUserSession, generateAnswer, generateAnswerStream, endUserSession, hasActiveSession } from '../services/gemini'
 import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
-import { getResumeSignedUrl } from '../services/cloudinary'
+import { downloadCloudinaryRaw } from '../services/cloudinary'
 
 interface AuthRequest extends FastifyRequest {
   user: { userId: string; email: string }
@@ -257,10 +257,8 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     if (!resumeText && profile?.resumeUrl) {
       request.log.info({ userId }, 'resumeText missing — fetching and extracting from Cloudinary URL')
       try {
-        // Use private_download_url — authenticated Admin API download, bypasses CDN access restrictions
-        const signedUrl = getResumeSignedUrl(profile.resumeUrl)
-        console.log(`[ResumeExtract] signed URL: ${signedUrl}`)
-        const buffer = await fetchBuffer(signedUrl)
+        // Use Admin API with Basic Auth — bypasses CDN access control restrictions
+        const buffer = await downloadCloudinaryRaw(profile.resumeUrl)
         console.log(`[ResumeExtract] Fetched OK — size=${buffer.length} firstBytes="${buffer.slice(0, 4).toString()}"`)
         const extracted = await extractPdfText(buffer)
         if (extracted) {
