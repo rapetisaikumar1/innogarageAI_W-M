@@ -43,10 +43,10 @@ export function getResumeSignedUrl(publicUrlOrId: string): string {
   const match = publicUrlOrId.match(/\/upload\/(?:v\d+\/)?(.+)$/)
   if (match) publicId = match[1]
 
-  return cloudinary.url(publicId, {
+  // private_download_url generates a temporarily signed URL using API key+secret
+  // works for type:'upload' resources (unlike cloudinary.url + expires_at which needs type:'authenticated')
+  return cloudinary.utils.private_download_url(publicId, 'pdf', {
     resource_type: 'raw',
-    sign_url: true,
-    secure: true,
     expires_at: Math.floor(Date.now() / 1000) + 300 // 5 min
   })
 }
