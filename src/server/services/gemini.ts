@@ -189,7 +189,7 @@ export async function initUserSession(userId: string, ctx: UserContext): Promise
     systemInstruction: buildSystemPrompt(ctx),
     generationConfig: {
       // @ts-ignore — thinkingConfig supported in gemini-2.5-flash
-      thinkingConfig: { thinkingBudget: 512 }  // minimal thinking — better resume grounding vs pure speed
+      thinkingConfig: { thinkingBudget: 0 }  // no thinking — fastest TTFT, streaming starts immediately
     }
   })
 
