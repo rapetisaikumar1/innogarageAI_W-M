@@ -71,8 +71,8 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
         smart_format: true,
         punctuate: true,
         interim_results: true,
-        utterance_end_ms: 2000,          // 2.0 s of silence → UtteranceEnd fallback
-        endpointing: 1850,               // 1850 ms silence → speech_final
+        utterance_end_ms: 1200,          // 1.2 s of silence → UtteranceEnd fallback
+        endpointing: 1000,               // 1000 ms silence → speech_final
         encoding: 'linear16',
         sample_rate: 16000,
         channels: 1,
