@@ -35,13 +35,6 @@ let callbacks:       AudioPipelineCallbacks | null = null
 let isRunning        = false
 let wsReconnects     = 0
 
-// Per-question pending callbacks for WS-based AI streaming
-const pendingQuestions = new Map<string, {
-  onChunk: (chunk: string) => void
-  onDone:  () => void
-  onError: (err: string) => void
-}>()
-
 function dbg(...args: unknown[]): void {
   if (DEBUG) console.log('[AudioPipeline]', ...args)
 }
@@ -82,16 +75,6 @@ function openWebSocket(token: string): WebSocket {
         const isFinal = msg.speechFinal === true  // utterance boundary = truly final
         dbg(`  ← transcript isFinal=${isFinal} speechFinal=${msg.speechFinal} text="${text}"`)
         callbacks?.onTranscript(text, isFinal)
-      } else if (msg.type === 'ai_chunk' && msg.questionId) {
-        pendingQuestions.get(msg.questionId)?.onChunk(msg.text ?? '')
-      } else if (msg.type === 'ai_done' && msg.questionId) {
-        const q = pendingQuestions.get(msg.questionId)
-        pendingQuestions.delete(msg.questionId)
-        q?.onDone()
-      } else if (msg.type === 'ai_error' && msg.questionId) {
-        const q = pendingQuestions.get(msg.questionId)
-        pendingQuestions.delete(msg.questionId)
-        q?.onError(msg.message ?? 'AI error')
       } else if (msg.type === 'error') {
         dbg('  ← Deepgram error:', msg.message)
         if (isRunning) callbacks?.onError(`Deepgram error: ${msg.message}`)
@@ -109,10 +92,6 @@ function openWebSocket(token: string): WebSocket {
   ws.onclose = (e) => {
     dbg(`WebSocket closed: code=${e.code} reason=${e.reason}`)
     if (isRunning && e.code !== 1000 && e.code !== 4001) {
-      if (pendingQuestions.size > 0) {
-        pendingQuestions.forEach(q => q.onError('Stream reconnecting, please try again'))
-        pendingQuestions.clear()
-      }
       // Transient disconnect — try to reconnect
       if (wsReconnects < MAX_WS_RECONNECTS) {
         wsReconnects++
@@ -342,20 +321,3 @@ export async function checkMicPermission(): Promise<boolean> {
 }
 
 export function getCurrentSource(): AudioSource { return currentSource }
-
-/**
- * Send a question to AI via the existing WebSocket (text frame).
- * Returns false if the WS is not open (caller should fall back to HTTP).
- */
-export function sendQuestion(
-  text: string,
-  questionId: string,
-  onChunk: (chunk: string) => void,
-  onDone: () => void,
-  onError: (err: string) => void
-): boolean {
-  if (!wsConn || wsConn.readyState !== WebSocket.OPEN) return false
-  pendingQuestions.set(questionId, { onChunk, onDone, onError })
-  wsConn.send(JSON.stringify({ type: 'ask', questionId, text }))
-  return true
-}

@@ -1,39 +1,15 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
 import { eq } from 'drizzle-orm'
-import https from 'https'
-import http from 'http'
 import { getDb } from '../db'
 import { users, profiles } from '../db/schema'
 import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
-import { initUserSession, generateAnswer, generateAnswerStream, endUserSession, hasActiveSession } from '../services/gemini'
+import { initUserSession, generateAnswer, endUserSession, hasActiveSession } from '../services/gemini'
 import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
 import { downloadCloudinaryRaw } from '../services/cloudinary'
 
 interface AuthRequest extends FastifyRequest {
   user: { userId: string; email: string }
-}
-
-// Fetch a URL and return it as a Buffer (follows redirects)
-function fetchBuffer(url: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const get = (u: string) => {
-      const lib = u.startsWith('https') ? https : http
-      lib.get(u, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return get(res.headers.location)
-        }
-        if (res.statusCode && res.statusCode >= 400) {
-          return reject(new Error(`HTTP ${res.statusCode} fetching resume`))
-        }
-        const chunks: Buffer[] = []
-        res.on('data', (c: Buffer) => chunks.push(c))
-        res.on('end', () => resolve(Buffer.concat(chunks)))
-        res.on('error', reject)
-      }).on('error', reject)
-    }
-    get(url)
-  })
 }
 
 // Extract text from a PDF buffer using pdf-parse v2
@@ -78,33 +54,9 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     // eslint-disable-next-line prefer-const
     let dgConn: { getReadyState: () => number; send: (b: Buffer) => void; requestClose: () => void } | null = null
 
-    // Per-user ask queue — serializes concurrent WS questions so ChatSession is never called concurrently
-    let askQueue: Promise<void> = Promise.resolve()
-
-    // Forward raw PCM from renderer → buffer or Deepgram
-    // Text frames (isBinary=false) carry JSON control messages (type: 'ask')
+    // Forward raw PCM from renderer → buffer or Deepgram (WebSocket is audio-only)
     socket.on('message', (data: Buffer, isBinary: boolean) => {
-      if (!isBinary) {
-        try {
-          const msg = JSON.parse(data.toString('utf8')) as { type?: string; questionId?: string; text?: string }
-          if (msg.type === 'ask' && msg.questionId && msg.text?.trim()) {
-            const { questionId, text } = msg
-            // Chain onto the queue so concurrent questions are processed one at a time
-            askQueue = askQueue.then(async () => {
-              try {
-                for await (const chunk of generateAnswerStream(userId, text.trim())) {
-                  if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'ai_chunk', questionId, text: chunk }))
-                }
-                if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'ai_done', questionId }))
-              } catch (err) {
-                request.log.error({ err, questionId }, 'WS AI stream error')
-                if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'ai_error', questionId, message: 'AI service temporarily unavailable.' }))
-              }
-            })
-          }
-        } catch { /* ignore malformed JSON */ }
-        return
-      }
+      if (!isBinary) return  // ignore non-binary frames
       if (dgConn && dgConn.getReadyState() === 1) {
         dgConn.send(data)
       } else {
@@ -312,7 +264,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     return { message: 'Interview session started', active: true }
   })
 
-  // Send transcribed text → stream AI answer via SSE
+  // Send transcribed text → return complete AI answer as JSON
   app.post('/interview/ask', { preHandler: authMiddleware }, async (request, reply) => {
     const { userId } = (request as AuthRequest).user
     const { text } = request.body as { text: string }
@@ -325,24 +277,12 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'No active interview session' })
     }
 
-    reply.hijack()
-    const raw = reply.raw
-    raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-    raw.setHeader('Cache-Control', 'no-cache')
-    raw.setHeader('Connection', 'keep-alive')
-    raw.setHeader('Access-Control-Allow-Origin', '*')
-    raw.flushHeaders()
-
     try {
-      for await (const chunk of generateAnswerStream(userId, text.trim())) {
-        raw.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)
-      }
-      raw.write('data: [DONE]\n\n')
+      const answer = await generateAnswer(userId, text.trim())
+      return { answer }
     } catch (err) {
-      request.log.error({ err }, 'generateAnswerStream failed')
-      raw.write(`data: ${JSON.stringify({ error: 'AI service temporarily unavailable.' })}\n\n`)
-    } finally {
-      raw.end()
+      request.log.error({ err }, 'generateAnswer failed')
+      return reply.code(500).send({ error: 'AI service temporarily unavailable.' })
     }
   })
 

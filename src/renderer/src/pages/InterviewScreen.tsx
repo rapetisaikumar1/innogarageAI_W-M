@@ -4,7 +4,7 @@ import { Loader2, MessageSquare, Sparkles, AudioLines, Code2, Monitor, Copy, Che
 import { useAuthStore } from '../store/authStore'
 import { useInterviewStore } from '../store/interviewStore'
 import { useSessionStore } from '../store/sessionStore'
-import { startAudioPipeline, stopAudioPipeline, switchAudioSource, sendQuestion } from '../services/audioPipeline'
+import { startAudioPipeline, stopAudioPipeline, switchAudioSource } from '../services/audioPipeline'
 import { startScreenCapture, stopScreenCapture, pauseScreenCapture, resumeScreenCapture } from '../services/screenCapture'
 import { api } from '../services/api'
 import { useState } from 'react'
@@ -65,13 +65,11 @@ export default function InterviewScreen(): React.JSX.Element {
     }
   }, [codeSuggestion?.detected, codeSuggestion?.suggestion])
 
-  // Send finalized text to AI — streams answer chunks into the QA pair in real-time
+  // Send finalized transcript to AI — waits for complete answer then displays it
   const sendToAI = useCallback(
     async (text: string) => {
-      console.log('[Pipeline STAGE 8] sendToAI called, text:', JSON.stringify(text), '| isProcessing:', isProcessingRef.current, '| queueLen:', sendQueueRef.current.length)
-      if (!text.trim()) { console.log('[Pipeline STAGE 8] empty text, skipping'); return }
+      if (!text.trim()) return
       if (isProcessingRef.current) {
-        console.log('[Pipeline STAGE 8] busy — pushed to queue, queue now:', sendQueueRef.current.length + 1)
         sendQueueRef.current.push(text)
         return
       }
@@ -82,37 +80,17 @@ export default function InterviewScreen(): React.JSX.Element {
       const id = crypto.randomUUID()
       addQAPair({ id, question: text.trim(), answer: '', timestamp: Date.now() })
 
-      let accumulated = ''
-      console.log('[Pipeline STAGE 8] → sending question via WebSocket:', JSON.stringify(text))
       try {
-        const doAsk = (): Promise<void> => new Promise<void>((resolve, reject) => {
-          const sentViaWS = sendQuestion(
-            text,
-            id,
-            (chunk) => { accumulated += chunk; updateQAPairAnswer(id, accumulated) },
-            () => { console.log('[Pipeline STAGE 8] ← WS stream complete, total length:', accumulated.length); resolve() },
-            (err) => { console.log('[Pipeline STAGE 8] ✗ WS stream error:', err); reject(new Error(err)) }
-          )
-          if (!sentViaWS) {
-            // WS not open — fall back to HTTP SSE
-            console.log('[Pipeline STAGE 8] WS unavailable — falling back to HTTP')
-            api.interviewAskStream(
-              text,
-              (chunk) => { accumulated += chunk; updateQAPairAnswer(id, accumulated) },
-              (err) => { reject(new Error(err)) }
-            ).then(resolve).catch(reject)
-          }
-        })
+        const doAsk = async (): Promise<void> => {
+          const { answer } = await api.interviewAsk(text.trim())
+          updateQAPairAnswer(id, answer)
+        }
 
         try {
           await doAsk()
         } catch (err) {
           const msg = (err as Error).message || ''
-          // Session lost (Railway restart) — silently re-init and retry once
           if (msg.includes('No active interview session')) {
-            console.log('[Pipeline STAGE 8] session lost — re-initializing and retrying')
-            accumulated = ''
-            updateQAPairAnswer(id, '')
             await api.interviewStart()
             await doAsk()
           } else {
@@ -120,13 +98,12 @@ export default function InterviewScreen(): React.JSX.Element {
           }
         }
       } catch (err) {
-        console.log('[Pipeline STAGE 8] ✗ sendToAI error:', (err as Error).message)
         setError((err as Error).message)
       } finally {
         setProcessing(false)
         isProcessingRef.current = false
         const next = sendQueueRef.current.shift()
-        if (next) { console.log('[Pipeline STAGE 8] processing queued item'); setTimeout(() => sendToAI(next), 0) }
+        if (next) setTimeout(() => sendToAI(next), 0)
       }
     },
     [addQAPair, updateQAPairAnswer, setProcessing, setError]

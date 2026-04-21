@@ -207,7 +207,7 @@ function isTransient(err: unknown): boolean {
          msg.includes('overloaded') || msg.includes('Failed to parse stream')
 }
 
-async function retryWithBackoff<T>(fn: () => Promise<T>, maxAttempts = 5): Promise<T> {
+async function retryWithBackoff<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
   let lastErr: unknown
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -215,10 +215,8 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxAttempts = 5): Promi
     } catch (err) {
       lastErr = err
       if (!isTransient(err) || attempt === maxAttempts) throw err
-      // Exponential backoff: 1s, 2s, 4s, 8s
-      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000)
-      console.warn(`[Gemini] transient error on attempt ${attempt}, retrying in ${delay}ms:`, (err as Error).message)
-      await new Promise(r => setTimeout(r, delay))
+      console.warn(`[Gemini] transient error on attempt ${attempt}, retrying in 1000ms:`, (err as Error).message)
+      await new Promise(r => setTimeout(r, 1000))
     }
   }
   throw lastErr
@@ -232,37 +230,6 @@ export async function generateAnswer(userId: string, question: string): Promise<
 
   const result = await retryWithBackoff(() => session.sendMessage(question))
   return result.response.text()
-}
-
-export async function* generateAnswerStream(userId: string, question: string): AsyncGenerator<string> {
-  const session = userSessions.get(userId)
-  if (!session) {
-    console.log(`[Gemini] generateAnswerStream — NO SESSION for userId=${userId}`)
-    throw new Error('No active interview session. Please start an interview first.')
-  }
-  console.log(`[Gemini] generateAnswerStream — sending question: "${question.slice(0, 80)}..."`)
-
-  const MAX_ATTEMPTS = 3  // 1 initial attempt + 2 retries
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    let chunksYielded = 0
-    try {
-      const streamResult = await session.sendMessageStream(question)
-      for await (const chunk of streamResult.stream) {
-        const text = chunk.text()
-        if (text) { chunksYielded++; yield text }
-      }
-      return // success — generator done
-    } catch (err) {
-      if (chunksYielded > 0) {
-        // Partial content already sent — stop gracefully, route still sends [DONE]
-        console.warn(`[Gemini] stream interrupted mid-response (${chunksYielded} chunks sent):`, (err as Error).message)
-        return
-      }
-      if (!isTransient(err) || attempt === MAX_ATTEMPTS) throw err
-      console.warn(`[Gemini] transient error on attempt ${attempt}, retrying in 1000ms:`, (err as Error).message)
-      await new Promise(r => setTimeout(r, 1000))
-    }
-  }
 }
 
 export function endUserSession(userId: string): void {
