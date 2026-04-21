@@ -39,16 +39,24 @@ export function getResumeSignedUrl(publicUrlOrId: string): string {
   ensureConfig()
   // Extract public_id from secure_url if a full URL was stored
   // e.g. https://res.cloudinary.com/<cloud>/raw/upload/v123/innogarage-resumes/file.pdf
+  // Extract version and public_id from the stored secure_url
+  // e.g. https://res.cloudinary.com/<cloud>/raw/upload/v1234567/innogarage-resumes/file.pdf
   let publicId = publicUrlOrId
-  const match = publicUrlOrId.match(/\/upload\/(?:v\d+\/)?(.+)$/)
-  if (match) publicId = match[1]
-  console.log(`[Cloudinary] getResumeSignedUrl — input: ${publicUrlOrId.slice(0, 120)} | extracted publicId: ${publicId}`)
+  let version: number | undefined
+  const match = publicUrlOrId.match(/\/upload\/(?:v(\d+)\/)?(.+)$/)
+  if (match) {
+    version = match[1] ? parseInt(match[1], 10) : undefined
+    publicId = match[2]
+  }
+  console.log(`[Cloudinary] getResumeSignedUrl — publicId: ${publicId} | version: ${version}`)
 
-  // private_download_url generates a temporarily signed download URL using API credentials.
-  // Pass '' as format — raw public_ids already include the extension (e.g. .pdf),
-  // passing 'pdf' would double it causing a 404.
-  return cloudinary.utils.private_download_url(publicId, '', {
+  // cloudinary.url() with sign_url:true embeds the signature in the URL path (s--SIG--)
+  // This works for type:'upload' raw resources and uses a different signature than private_download_url
+  return cloudinary.url(publicId, {
     resource_type: 'raw',
-    expires_at: Math.floor(Date.now() / 1000) + 300 // 5 min
+    type: 'upload',
+    sign_url: true,
+    secure: true,
+    ...(version ? { version } : {})
   })
 }
