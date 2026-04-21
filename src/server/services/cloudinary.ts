@@ -66,16 +66,24 @@ export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buff
           ...headers
         }
         https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: reqHeaders }, (res) => {
-          console.log(`[Cloudinary] fetch ${fetchUrl.slice(0, 80)} → status=${res.statusCode} www-auth=${res.headers['www-authenticate'] || 'none'}`)
+          const contentType = res.headers['content-type'] || ''
+          console.log(`[Cloudinary] fetch ${fetchUrl.slice(0, 80)} → status=${res.statusCode} content-type=${contentType} size=${res.headers['content-length'] || '?'}`)
           if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             return get(res.headers.location)
           }
-          if (res.statusCode && res.statusCode >= 400) {
+          // Cloudinary returns 401 with the actual PDF body for access-controlled resources.
+          // Accept 401 if content-type is application/pdf (the body IS the file).
+          const isPdfBody = contentType.includes('application/pdf') || contentType.includes('application/octet-stream')
+          if (res.statusCode && res.statusCode >= 400 && !isPdfBody) {
             return reject(new Error(`HTTP ${res.statusCode}`))
           }
           const chunks: Buffer[] = []
           res.on('data', (c: Buffer) => chunks.push(c))
-          res.on('end', () => resolve(Buffer.concat(chunks)))
+          res.on('end', () => {
+            const buf = Buffer.concat(chunks)
+            console.log(`[Cloudinary] downloaded ${buf.length} bytes, first4=${buf.slice(0, 4).toString()}`)
+            resolve(buf)
+          })
           res.on('error', reject)
         }).on('error', reject)
       }
