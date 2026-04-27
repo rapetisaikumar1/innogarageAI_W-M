@@ -4,7 +4,6 @@ import { ArrowLeft, Monitor, Mic, Shield, CheckCircle2, AlertCircle, ArrowRight,
 import Button from '../components/ui/Button'
 import { useAuthStore } from '../store/authStore'
 import {
-  screenSettingsLabel as SCREEN_SETTINGS_LABEL,
   screenDeniedMsg as SCREEN_DENIED_MSG,
   screenStaleMsg as SCREEN_STALE_MSG,
   micDeniedMsg as MIC_DENIED_MSG

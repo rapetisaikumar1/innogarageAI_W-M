@@ -98,6 +98,7 @@ export default function InterviewScreen(): React.JSX.Element {
             const { qaPairs } = useInterviewStore.getState()
             const history = qaPairs
               .filter(p => p.answer)
+              .sort((a, b) => a.timestamp - b.timestamp)
               .map(p => ({ question: p.question, answer: p.answer }))
             await api.interviewStart(history)
             await doAsk()

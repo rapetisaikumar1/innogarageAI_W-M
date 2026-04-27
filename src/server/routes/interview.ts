@@ -49,18 +49,23 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
 
     request.log.info({ userId }, 'Deepgram stream started')
 
+    const toAudioFrame = (data: Buffer): ArrayBuffer => {
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+    }
+
     // PCM audio buffered while Deepgram connection is still opening
-    const audioBuffer: Buffer[] = []
+    const audioBuffer: ArrayBuffer[] = []
     // eslint-disable-next-line prefer-const
-    let dgConn: { getReadyState: () => number; send: (b: Buffer) => void; requestClose: () => void } | null = null
+    let dgConn: { getReadyState: () => number; send: (b: ArrayBuffer) => void; requestClose: () => void } | null = null
 
     // Forward raw PCM from renderer → buffer or Deepgram (WebSocket is audio-only)
     socket.on('message', (data: Buffer, isBinary: boolean) => {
       if (!isBinary) return  // ignore non-binary frames
+      const audioFrame = toAudioFrame(data)
       if (dgConn && dgConn.getReadyState() === 1) {
-        dgConn.send(data)
+        dgConn.send(audioFrame)
       } else {
-        audioBuffer.push(data)
+        audioBuffer.push(audioFrame)
         if (audioBuffer.length > 480) audioBuffer.shift()
       }
     })

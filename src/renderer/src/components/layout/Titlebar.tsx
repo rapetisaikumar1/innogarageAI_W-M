@@ -131,9 +131,10 @@ export default function Titlebar(): React.JSX.Element {
   const { audioSource, setAudioSource, elapsedSeconds, setElapsedSeconds, reset: resetInterview } = useInterviewStore()
   const { saveSession } = useSessionStore()
   const [isMaximized, setIsMaximized] = useState(false)
-  const [isPrivate, setIsPrivate] = useState(false)
+  const [privacyOverride, setPrivacyOverride] = useState<{ key: string; enabled: boolean } | null>(null)
 
   const isInterviewScreen = location.pathname === '/interview'
+  const isPrivate = isInterviewScreen && (privacyOverride?.key === location.key ? privacyOverride.enabled : true)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Sync isMaximized with actual window state (handles OS-initiated maximize/restore)
@@ -147,16 +148,9 @@ export default function Titlebar(): React.JSX.Element {
 
   // Auto-enable private mode when on interview screen, restore public on exit
   useEffect(() => {
-    if (isInterviewScreen) {
-      setIsPrivate(true)
-      window.api.setContentProtection(true)
-      window.api.setSkipTaskbar(true)
-    } else {
-      setIsPrivate(false)
-      window.api.setContentProtection(false)
-      window.api.setSkipTaskbar(false)
-    }
-  }, [isInterviewScreen])
+    window.api.setContentProtection(isPrivate)
+    window.api.setSkipTaskbar(isPrivate)
+  }, [isPrivate])
 
   // Interview timer
   useEffect(() => {
@@ -205,7 +199,7 @@ export default function Titlebar(): React.JSX.Element {
 
   const handlePrivacyToggle = (): void => {
     const next = !isPrivate
-    setIsPrivate(next)
+    setPrivacyOverride({ key: location.key, enabled: next })
     window.api.setContentProtection(next)
     window.api.setSkipTaskbar(next)
   }

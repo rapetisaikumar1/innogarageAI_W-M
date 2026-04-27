@@ -19,7 +19,6 @@ function ensureConfig(): void {
 // Cloudinary ZIPs have sizes as zero in local file headers — must read from central directory.
 function extractFirstFileFromZip(buf: Buffer): Buffer {
   // Locate End of Central Directory Record (EOCD): signature 0x50 0x4b 0x05 0x06
-  const eocdSig = Buffer.from([0x50, 0x4b, 0x05, 0x06])
   let eocdOffset = -1
   for (let i = buf.length - 22; i >= 0; i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) { eocdOffset = i; break }
@@ -33,8 +32,6 @@ function extractFirstFileFromZip(buf: Buffer): Buffer {
 
   const method         = buf.readUInt16LE(cdOffset + 10)
   const compressedSize = buf.readUInt32LE(cdOffset + 20)
-  const lhFilenameLen  = buf.readUInt16LE(cdOffset + 28)
-  const lhExtraLen     = buf.readUInt16LE(cdOffset + 30)
   const localHdrOffset = buf.readUInt32LE(cdOffset + 42)
 
   // Local file header: filename length at offset 26, extra field length at offset 28
@@ -76,7 +73,7 @@ export async function downloadCloudinaryRaw(publicUrlOrId: string): Promise<Buff
 
   // Fetch the ZIP via Admin API
   const zipBuf = await new Promise<Buffer>((resolve, reject) => {
-    const get = (u: string) => {
+    const get = (u: string): void => {
       const urlObj = new URL(u)
       https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search }, (res) => {
         console.log(`[Cloudinary] archive fetch → status=${res.statusCode} content-type=${res.headers['content-type']} size=${res.headers['content-length'] || '?'}`)

@@ -113,8 +113,15 @@ export default function UpdateAccount(): React.JSX.Element {
       if (resumeFile) {
         await api.uploadResume(resumeFile)
       }
-      // Strip endClient — not in DB schema; only send supported fields
-      const { endClient: _ec, ...profileData } = form
+      const profileData = {
+        jobDescription: form.jobDescription,
+        jobRole: form.jobRole,
+        experience: form.experience,
+        interviewType: form.interviewType,
+        company: form.company,
+        language: form.language,
+        aiInstructions: form.aiInstructions
+      }
       const res = await api.updateProfile(profileData)
       setProfile(res.profile as typeof profile)
       navigate('/post-auth')

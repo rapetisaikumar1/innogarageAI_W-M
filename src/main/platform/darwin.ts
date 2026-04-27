@@ -2,23 +2,34 @@ import { shell, systemPreferences } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { PlatformBehavior } from './types'
 
-// macOS NSWindowSharingNone state can be cleared briefly by the OS during
-// window state changes (setAlwaysOnTop, space switch, focus, full-screen
-// transitions). Zoom and Microsoft Teams use ScreenCaptureKit which captures
-// continuously — any gap is enough for a frame to leak. We mitigate with:
-//   1) Aggressive heartbeat (re-apply every 500ms)
-//   2) Re-apply on EVERY window event that can reset it
-//   3) Apply immediately (no debounce delay)
-//   4) Hide from Mission Control + window switcher to reduce surface area
-const HEARTBEAT_MS = 500
+// macOS NSWindowSharingNone can be cleared by AppKit during window state
+// changes. Keep the interview window as a normal opaque NSWindow + opacity
+// overlay, then aggressively re-apply sharing protection around every state
+// transition so Google Meet, Zoom, and Teams capture a protected surface.
+const HEARTBEAT_MS = 250
+const BURST_REAPPLY_DELAYS = [0, 50, 150, 350, 700]
 let cpHeartbeat: ReturnType<typeof setInterval> | null = null
 let cpActive = false  // whether content protection is currently desired
+
+function applyProtectedSurface(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  win.setContentProtection(true)
+  try { win.setHiddenInMissionControl(true) } catch { console.warn('[darwin] setHiddenInMissionControl(true) failed') }
+}
+
+function burstReapply(win: BrowserWindow): void {
+  for (const delay of BURST_REAPPLY_DELAYS) {
+    setTimeout(() => {
+      if (cpActive) applyProtectedSurface(win)
+    }, delay)
+  }
+}
 
 function startHeartbeat(win: BrowserWindow): void {
   if (cpHeartbeat) return
   cpHeartbeat = setInterval(() => {
     if (win.isDestroyed()) { stopHeartbeat(); return }
-    win.setContentProtection(true)
+    if (cpActive) applyProtectedSurface(win)
   }, HEARTBEAT_MS)
 }
 
@@ -27,16 +38,21 @@ function stopHeartbeat(): void {
 }
 
 const darwin: PlatformBehavior = {
-  earlySetup() {},
+  earlySetup() {
+    return undefined
+  },
 
   windowOptions() {
     return {
-      transparent: true,
-      backgroundColor: '#00000000'
+      transparent: false,
+      backgroundColor: '#1a1a2e',
+      hasShadow: false
     }
   },
 
-  onWindowCreated(_win) {},
+  onWindowCreated(win) {
+    void win
+  },
 
   bindContentProtectionEvents(win, reapply) {
     // Every event that may cause macOS to reset NSWindowSharingNone.
@@ -53,24 +69,28 @@ const darwin: PlatformBehavior = {
     win.on('unmaximize', reapply)
     win.on('enter-full-screen', reapply)
     win.on('leave-full-screen', reapply)
+    win.webContents.on('did-finish-load', reapply)
   },
 
   applyContentProtection(win, enabled) {
     if (win.isDestroyed()) return
     cpActive = enabled
-    win.setContentProtection(enabled)
     if (enabled) {
       // Reduce the OS surfaces where this window appears in screen capture.
-      try { win.setHiddenInMissionControl(true) } catch {}
+      applyProtectedSurface(win)
       startHeartbeat(win)
+      burstReapply(win)
     } else {
-      try { win.setHiddenInMissionControl(false) } catch {}
+      try { win.setHiddenInMissionControl(false) } catch { console.warn('[darwin] setHiddenInMissionControl(false) failed') }
       stopHeartbeat()
+      win.setContentProtection(false)
     }
   },
 
   applyOverlayMode(win, enabled) {
-    win.setBackgroundColor(enabled ? '#00000000' : '#1a1a2e')
+    win.setBackgroundColor('#1a1a2e')
+    win.setOpacity(enabled ? 0.88 : 1.0)
+    if (cpActive) burstReapply(win)
   },
 
   setAlwaysOnTop(win, flag) {
@@ -79,16 +99,16 @@ const darwin: PlatformBehavior = {
     // and Teams can capture the window during the gap before the heartbeat
     // fires. Re-apply immediately, then again on the next tick to cover the
     // post-AppKit-flush window where the OS resets the sharing flag.
-    win.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true })
+    win.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: true, skipTransformProcessType: true })
     if (cpActive && !win.isDestroyed()) {
-      win.setContentProtection(true)
-      setImmediate(() => {
-        if (cpActive && !win.isDestroyed()) win.setContentProtection(true)
-      })
+      burstReapply(win)
     }
   },
 
-  setSkipTaskbar(_win, _flag) {},
+  setSkipTaskbar(win, flag) {
+    void win
+    void flag
+  },
 
   appUserModelId() {
     return 'com.innogarage'

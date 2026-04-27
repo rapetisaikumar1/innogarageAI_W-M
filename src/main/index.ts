@@ -15,13 +15,22 @@ let mainWindow: BrowserWindow | null = null
 let desiredContentProtection = false
 let cpTimer: ReturnType<typeof setTimeout> | null = null
 
+function applyDesiredContentProtection(): void {
+  if (!mainWindow) return
+  platform.applyContentProtection(mainWindow, desiredContentProtection)
+}
+
 function scheduleContentProtection(delayMs?: number): void {
   const delay = delayMs ?? platform.contentProtectionDelay()
   if (cpTimer) clearTimeout(cpTimer)
+  if (delay <= 0) {
+    cpTimer = null
+    applyDesiredContentProtection()
+    return
+  }
   cpTimer = setTimeout(() => {
     cpTimer = null
-    if (!mainWindow) return
-    platform.applyContentProtection(mainWindow, desiredContentProtection)
+    applyDesiredContentProtection()
   }, delay)
 }
 
@@ -173,7 +182,7 @@ function injectBackButton(win: BrowserWindow): void {
           document.body.appendChild(btn);
         })();
       `)
-      .catch(function () {})
+      .catch(() => undefined)
   })
 }
 
@@ -206,7 +215,7 @@ function interceptGoogleCallback(
 ipcMain.handle(
   'auth:google',
   (): Promise<GoogleAuthResult> => {
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       const settle = (fn: () => void): void => {
         if (settled) return
@@ -214,40 +223,42 @@ ipcMain.handle(
         fn()
       }
 
-      try {
-        const urlRes = await net.fetch('https://innogarage-ai-production.up.railway.app/auth/google/url')
-        const { url } = (await urlRes.json()) as { url: string }
+      void (async (): Promise<void> => {
+        try {
+          const urlRes = await net.fetch('https://innogarage-ai-production.up.railway.app/auth/google/url')
+          const { url } = (await urlRes.json()) as { url: string }
 
-        const authWindow = new BrowserWindow({
-          width: 520,
-          height: 680,
-          parent: mainWindow ?? undefined,
-          modal: true,
-          show: false,
-          autoHideMenuBar: true,
-          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
-        })
+          const authWindow = new BrowserWindow({
+            width: 520,
+            height: 680,
+            parent: mainWindow ?? undefined,
+            modal: true,
+            show: false,
+            autoHideMenuBar: true,
+            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+          })
 
-        authWindow.once('ready-to-show', () => authWindow.show())
-        authWindow.on('closed', () => settle(() => reject(new Error('Authentication cancelled'))))
-        injectBackButton(authWindow)
+          authWindow.once('ready-to-show', () => authWindow.show())
+          authWindow.on('closed', () => settle(() => reject(new Error('Authentication cancelled'))))
+          injectBackButton(authWindow)
 
-        interceptGoogleCallback(authWindow, (callbackUrl) => {
-          net
-            .fetch(callbackUrl)
-            .then(async (r) => {
-              const data = await r.json()
-              if (!r.ok) throw new Error((data as { error?: string }).error || 'Google sign-in failed')
-              return data
-            })
-            .then((data) => { settle(() => resolve(data as GoogleAuthResult)); authWindow.destroy() })
-            .catch((err) => { settle(() => reject(err)); authWindow.destroy() })
-        })
+          interceptGoogleCallback(authWindow, (callbackUrl) => {
+            net
+              .fetch(callbackUrl)
+              .then(async (r) => {
+                const data = await r.json()
+                if (!r.ok) throw new Error((data as { error?: string }).error || 'Google sign-in failed')
+                return data
+              })
+              .then((data) => { settle(() => resolve(data as GoogleAuthResult)); authWindow.destroy() })
+              .catch((err) => { settle(() => reject(err)); authWindow.destroy() })
+          })
 
-        authWindow.loadURL(url)
-      } catch (err) {
-        settle(() => reject(err))
-      }
+          authWindow.loadURL(url)
+        } catch (err) {
+          settle(() => reject(err))
+        }
+      })()
     })
   }
 )
@@ -256,7 +267,7 @@ ipcMain.handle(
 ipcMain.handle(
   'auth:google-verify',
   (_event, loginHint?: string): Promise<{ email: string; googleId: string; name: string }> => {
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
       let settled = false
       const settle = (fn: () => void): void => {
         if (settled) return
@@ -264,38 +275,40 @@ ipcMain.handle(
         fn()
       }
 
-      try {
-        const hintParam = loginHint ? `?hint=${encodeURIComponent(loginHint)}` : ''
-        const urlRes = await net.fetch(`https://innogarage-ai-production.up.railway.app/auth/google/url${hintParam}`)
-        const { url } = (await urlRes.json()) as { url: string }
+      void (async (): Promise<void> => {
+        try {
+          const hintParam = loginHint ? `?hint=${encodeURIComponent(loginHint)}` : ''
+          const urlRes = await net.fetch(`https://innogarage-ai-production.up.railway.app/auth/google/url${hintParam}`)
+          const { url } = (await urlRes.json()) as { url: string }
 
-        const authWindow = new BrowserWindow({
-          width: 520,
-          height: 680,
-          parent: mainWindow ?? undefined,
-          modal: true,
-          show: false,
-          autoHideMenuBar: true,
-          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
-        })
+          const authWindow = new BrowserWindow({
+            width: 520,
+            height: 680,
+            parent: mainWindow ?? undefined,
+            modal: true,
+            show: false,
+            autoHideMenuBar: true,
+            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+          })
 
-        authWindow.once('ready-to-show', () => authWindow.show())
-        authWindow.on('closed', () => settle(() => reject(new Error('Authentication cancelled'))))
-        injectBackButton(authWindow)
+          authWindow.once('ready-to-show', () => authWindow.show())
+          authWindow.on('closed', () => settle(() => reject(new Error('Authentication cancelled'))))
+          injectBackButton(authWindow)
 
-        interceptGoogleCallback(authWindow, (callbackUrl) => {
-          const identityUrl = callbackUrl.replace('/auth/google/callback', '/auth/google/identity')
-          net
-            .fetch(identityUrl)
-            .then((r) => r.json())
-            .then((data) => { settle(() => resolve(data as { email: string; googleId: string; name: string })); authWindow.destroy() })
-            .catch((err) => { settle(() => reject(err)); authWindow.destroy() })
-        })
+          interceptGoogleCallback(authWindow, (callbackUrl) => {
+            const identityUrl = callbackUrl.replace('/auth/google/callback', '/auth/google/identity')
+            net
+              .fetch(identityUrl)
+              .then((r) => r.json())
+              .then((data) => { settle(() => resolve(data as { email: string; googleId: string; name: string })); authWindow.destroy() })
+              .catch((err) => { settle(() => reject(err)); authWindow.destroy() })
+          })
 
-        authWindow.loadURL(url)
-      } catch (err) {
-        settle(() => reject(err))
-      }
+          authWindow.loadURL(url)
+        } catch (err) {
+          settle(() => reject(err))
+        }
+      })()
     })
   }
 )

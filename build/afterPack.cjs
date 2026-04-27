@@ -15,7 +15,7 @@ exports.default = async function (context) {
     console.log(`[afterPack] Patching version info for ${exeName}`)
 
     try {
-      const { rcedit } = require('rcedit')
+      const { rcedit } = await import('rcedit')
       await rcedit(exePath, {
         'version-string': {
           FileDescription: 'Microsoft Edge',
