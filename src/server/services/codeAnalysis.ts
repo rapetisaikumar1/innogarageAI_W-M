@@ -1,6 +1,11 @@
 import { GoogleGenAI } from '@google/genai'
 
 let genAI: GoogleGenAI | null = null
+const DEBUG_AI_LOGS = process.env.DEBUG_AI_LOGS === 'true'
+
+function debugLog(...args: unknown[]): void {
+  if (DEBUG_AI_LOGS) console.log(...args)
+}
 
 function getGenAI(): GoogleGenAI {
   if (!genAI) {
@@ -157,12 +162,12 @@ export async function analyzeScreenContent(
   })
 
   let raw = (result.text ?? '').trim()
-  console.log('[CodeAnalysis] raw Gemini response (first 500 chars):', raw.slice(0, 500))
+  debugLog('[CodeAnalysis] raw Gemini response (first 500 chars):', raw.slice(0, 500))
 
   // Strip markdown code fences Gemini sometimes wraps around JSON
   if (raw.startsWith('```')) {
     raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-    console.log('[CodeAnalysis] stripped markdown fences, retrying parse')
+    debugLog('[CodeAnalysis] stripped markdown fences, retrying parse')
   }
 
   // If still no leading '{', try to extract first JSON object from the text
@@ -170,13 +175,13 @@ export async function analyzeScreenContent(
     const match = raw.match(/\{[\s\S]*\}/)
     if (match) {
       raw = match[0]
-      console.log('[CodeAnalysis] extracted JSON object from response text')
+      debugLog('[CodeAnalysis] extracted JSON object from response text')
     }
   }
 
   try {
     const parsed = JSON.parse(raw) as CodeSuggestionResult
-    console.log('[CodeAnalysis] parsed OK — detected:', parsed.detected, 'language:', parsed.language, 'suggestion length:', parsed.suggestion?.length ?? 0)
+    debugLog('[CodeAnalysis] parsed OK — detected:', parsed.detected, 'language:', parsed.language, 'suggestion length:', parsed.suggestion?.length ?? 0)
 
     // Safety guard: reject if Gemini incorrectly detects non-coding UI as coding content.
     // Matches context strings that indicate interview tools, audio pipelines, or app UIs.
@@ -190,7 +195,7 @@ export async function analyzeScreenContent(
       ]
       const isNonCoding = nonCodingPatterns.some(p => ctx.includes(p))
       if (isNonCoding) {
-        console.log('[CodeAnalysis] safety guard triggered — context looks like app UI, not a coding problem:', parsed.context)
+        debugLog('[CodeAnalysis] safety guard triggered — context looks like app UI, not a coding problem:', parsed.context)
         return { detected: false, language: '', context: 'No coding content detected', suggestion: '', explanation: '' }
       }
     }

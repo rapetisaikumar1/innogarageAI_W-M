@@ -12,7 +12,7 @@
 
 const WS_URL   = 'wss://innogarage-ai-production.up.railway.app'
 export const BASE_URL = 'https://innogarage-ai-production.up.railway.app'
-const DEBUG    = true
+const DEBUG    = import.meta.env.DEV
 const TARGET_SAMPLE_RATE = 16000  // Deepgram linear16 expects 16kHz
 const MAX_WS_RECONNECTS = 10     // auto-reconnect up to 10 times on transient disconnect
 

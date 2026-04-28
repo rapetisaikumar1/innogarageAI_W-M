@@ -121,7 +121,7 @@ export default function InterviewScreen(): React.JSX.Element {
   // Handle final transcript — server sends complete utterance on UtteranceEnd, send straight to AI
   const handleFinalTranscript = useCallback(
     (text: string) => {
-      console.log('[Pipeline STAGE 7] handleFinalTranscript (full utterance):', JSON.stringify(text))
+      if (import.meta.env.DEV) console.log('[Pipeline STAGE 7] handleFinalTranscript (full utterance):', JSON.stringify(text))
       addTranscription(text)
       sendToAI(text)
     },
@@ -147,7 +147,7 @@ export default function InterviewScreen(): React.JSX.Element {
         // Start audio pipeline
         await startAudioPipeline(audioSource, {
           onTranscript: (text, isFinal) => {
-            console.log(`[Pipeline onTranscript] isFinal=${isFinal} text=${JSON.stringify(text)} mounted=${mounted}`)
+            if (import.meta.env.DEV) console.log(`[Pipeline onTranscript] isFinal=${isFinal} text=${JSON.stringify(text)} mounted=${mounted}`)
             if (!mounted) return
             if (isFinal) {
               setCurrentInterim('')
@@ -165,37 +165,6 @@ export default function InterviewScreen(): React.JSX.Element {
             }
           }
         })
-
-        // Initialize screen capture pipeline (paused — user activates via toggle)
-        try {
-          const token = localStorage.getItem('token') || ''
-          await startScreenCapture({
-            token,
-            onSuggestion: (result) => {
-              if (!mountedRef.current) return
-              setCodeSuggestion({
-                id: 'screen-suggestion',
-                detected: result.detected,
-                language: result.language,
-                context: result.context,
-                suggestion: result.suggestion,
-                explanation: result.explanation,
-                timestamp: Date.now()
-              })
-            },
-            onAnalyzingChange: (analyzing) => {
-              if (mountedRef.current) setAnalyzingScreen(analyzing)
-            }
-          })
-          if (mounted) {
-            screenCaptureInitializedRef.current = true
-            // Immediately pause — user needs to enable via toggle
-            pauseScreenCapture()
-            setScreenCaptureActive(false)
-          }
-        } catch (err) {
-          console.error('[ScreenCapture] Failed to start:', (err as Error).message)
-        }
 
         if (mounted) setInterviewActive(true)
         if (mounted) sessionStartedRef.current = true
@@ -257,16 +226,48 @@ export default function InterviewScreen(): React.JSX.Element {
     }
   }
 
-  const handleScreenAnalysisToggle = (): void => {
-    if (!screenCaptureInitializedRef.current) return
+  const handleScreenAnalysisToggle = async (): Promise<void> => {
     if (screenAnalysisEnabled) {
       pauseScreenCapture()
       setScreenCaptureActive(false)
       setScreenAnalysisEnabled(false)
-    } else {
+      return
+    }
+
+    try {
+      setAnalyzingScreen(true)
+      if (!screenCaptureInitializedRef.current) {
+        const token = localStorage.getItem('token') || ''
+        await startScreenCapture({
+          token,
+          onSuggestion: (result) => {
+            if (!mountedRef.current) return
+            setCodeSuggestion({
+              id: 'screen-suggestion',
+              detected: result.detected,
+              language: result.language,
+              context: result.context,
+              suggestion: result.suggestion,
+              explanation: result.explanation,
+              timestamp: Date.now()
+            })
+          },
+          onAnalyzingChange: (analyzing) => {
+            if (mountedRef.current) setAnalyzingScreen(analyzing)
+          }
+        })
+        screenCaptureInitializedRef.current = true
+      }
+
       resumeScreenCapture()
       setScreenCaptureActive(true)
       setScreenAnalysisEnabled(true)
+    } catch (err) {
+      setError((err as Error).message)
+      setScreenCaptureActive(false)
+      setScreenAnalysisEnabled(false)
+    } finally {
+      setAnalyzingScreen(false)
     }
   }
 
@@ -447,7 +448,7 @@ export default function InterviewScreen(): React.JSX.Element {
 
             {/* Screen Analysis Toggle */}
             <button
-              onClick={handleScreenAnalysisToggle}
+              onClick={() => { void handleScreenAnalysisToggle() }}
               className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
                 screenAnalysisEnabled
                   ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30'

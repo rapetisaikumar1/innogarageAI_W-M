@@ -1,6 +1,11 @@
 import { GoogleGenAI, Chat } from '@google/genai'
 
 let genAI: GoogleGenAI | null = null
+const DEBUG_AI_LOGS = process.env.DEBUG_AI_LOGS === 'true'
+
+function debugLog(...args: unknown[]): void {
+  if (DEBUG_AI_LOGS) console.log(...args)
+}
 
 function getGenAI(): GoogleGenAI {
   if (!genAI) {
@@ -36,8 +41,9 @@ interface UserContext {
 
 type GeminiContent = { role: 'user' | 'model'; parts: { text: string }[] }
 
-const CANDIDATE_FACTS_LIMIT = 3200
-const JOB_CONTEXT_LIMIT = 2400
+const CANDIDATE_FACTS_LIMIT = 2200
+const JOB_CONTEXT_LIMIT = 1600
+const GEMINI_THINKING_BUDGET = 500
 
 function cleanBlockText(value: string): string {
   return value
@@ -156,7 +162,7 @@ function buildSystemPrompt(ctx: UserContext): string {
 
   const candidateFacts = buildCandidateFacts(ctx)
   if (candidateFacts) {
-    parts.push('## Candidate Facts')
+    parts.push('## Candidate Facts (primary quick context)')
     parts.push(candidateFacts)
     parts.push('')
   }
@@ -171,14 +177,14 @@ function buildSystemPrompt(ctx: UserContext): string {
   // ── Full resume text (user-requested: do not first-4000 slice) ──────────
   if (ctx.resumeText?.trim()) {
     const resumeSnippet = cleanBlockText(ctx.resumeText)
-    console.log(`[Gemini] buildSystemPrompt — resumeText length=${resumeSnippet.length}, using full resume text`)
+    debugLog(`[Gemini] buildSystemPrompt — resumeText length=${resumeSnippet.length}, using full resume text`)
     parts.push('## Full Resume Text (every fact here is YOUR personal experience)')
     parts.push(resumeSnippet)
     parts.push('')
   } else if (ctx.resumeUrl) {
-    console.log('[Gemini] buildSystemPrompt — no resumeText, only resumeUrl')
+    debugLog('[Gemini] buildSystemPrompt — no resumeText, only resumeUrl')
   } else {
-    console.log('[Gemini] buildSystemPrompt — no resume at all')
+    debugLog('[Gemini] buildSystemPrompt — no resume at all')
   }
 
   // ── Compact rules ─────────────────────────────────────────────
@@ -204,7 +210,7 @@ export interface HistoryTurn {
 
 // Keep the last N completed Q&A pairs verbatim; older pairs are summarized
 // into a bounded rolling block so latency stays stable in long interviews.
-const RECENT_TURNS = 6
+const RECENT_TURNS = 4
 const HISTORY_SUMMARY_CHAR_LIMIT = 1600
 
 function compactHistoryText(value: string, maxChars: number): string {
@@ -258,7 +264,7 @@ function buildChatSession(ctx: UserContext, history: HistoryTurn[]): Chat {
     model: 'gemini-2.5-flash',
     config: {
       systemInstruction: buildSystemPrompt(ctx),
-      thinkingConfig: { thinkingBudget: 0 }
+      thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET }
     },
     history: chatHistory
   })
@@ -272,7 +278,7 @@ function rebuildChatSession(userId: string): void {
 }
 
 export async function initUserSession(userId: string, ctx: UserContext, history: HistoryTurn[] = []): Promise<void> {
-  console.log('[Gemini] initUserSession', {
+  debugLog('[Gemini] initUserSession', {
     userId,
     name: ctx.name,
     hasResumeText: !!ctx.resumeText,
@@ -319,10 +325,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 const STREAM_TIMEOUT_MS = 15_000
-const FIRST_TOKEN_TIMEOUT_MS = 8_000
-const STREAM_IDLE_TIMEOUT_MS = 8_000
-const MAX_STREAM_ATTEMPTS = 2   // 1 attempt + 1 retry; persistent 503s fall through to flash-lite faster
+const FIRST_TOKEN_TIMEOUT_MS = 4_000
+const STREAM_IDLE_TIMEOUT_MS = 5_000
+const SIMPLE_QUESTION_MAX_STREAM_ATTEMPTS = 1
+const MAX_STREAM_ATTEMPTS = 2   // complex questions get 1 retry; simple questions fail over faster
 const STREAM_BACKOFF_MS = [0, 800, 1500]
+
+function isSimpleQuestion(question: string): boolean {
+  const compact = cleanLine(question)
+  return compact.length <= 140 && !/[\n;{}]/.test(compact)
+}
+
+function isFirstTokenTimeout(err: unknown): boolean {
+  return ((err as Error).message || '').includes('first token')
+}
 
 async function* streamTextChunks(
   stream: AsyncIterable<{ text?: string }>,
@@ -375,16 +391,18 @@ export async function* generateAnswerStream(
   }
 
   let accumulatedAnswer = ''
+  let skipFlashFallback = false
+  const maxStreamAttempts = isSimpleQuestion(question) ? SIMPLE_QUESTION_MAX_STREAM_ATTEMPTS : MAX_STREAM_ATTEMPTS
 
   // Stream with exponential backoff retry — rebuild chat session on each retry
   // to avoid using a corrupted session after a previous failure
-  for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxStreamAttempts; attempt++) {
     const delay = STREAM_BACKOFF_MS[attempt - 1] ?? 1500
     if (delay > 0) {
-      console.warn(`[Gemini] stream retry attempt ${attempt}/${MAX_STREAM_ATTEMPTS} in ${delay}ms`, { userId, utteranceId })
+      console.warn(`[Gemini] stream retry attempt ${attempt}/${maxStreamAttempts} in ${delay}ms`, { userId, utteranceId })
       await new Promise(r => setTimeout(r, delay))
       // Rebuild a fresh chat session from clean history before retrying
-      console.log('[Gemini] rebuilding chat session before retry', { userId, utteranceId, attempt })
+      debugLog('[Gemini] rebuilding chat session before retry', { userId, utteranceId, attempt })
       rebuildChatSession(userId)
     }
 
@@ -442,31 +460,39 @@ export async function* generateAnswerStream(
       }
       // Permanent error — don't retry
       if (!isTransient(err)) throw err
+      if (isFirstTokenTimeout(err)) {
+        skipFlashFallback = true
+        break
+      }
       // More attempts remaining — loop will rebuild session and retry
-      if (attempt < MAX_STREAM_ATTEMPTS) continue
+      if (attempt < maxStreamAttempts) continue
     }
   }
 
   // Non-streaming fallback — all stream attempts exhausted
   // Rebuild once more so fallback uses a clean uncorrupted session
-  console.warn('[Gemini] all stream attempts failed, falling back to sendMessage', { userId, utteranceId })
   rebuildChatSession(userId)
-  try {
-    const fallback = await withTimeout(
-      retryWithBackoff(() => data.chat.sendMessage({ message: question }), 2),
-      STREAM_TIMEOUT_MS,
-      'sendMessage fallback'
-    )
-    const text = fallback.text ?? ''
-    if (text) {
-      data.history.push({ question, answer: text })
-      yield text
-      return
+  if (!skipFlashFallback) {
+    console.warn('[Gemini] all stream attempts failed, falling back to sendMessage', { userId, utteranceId })
+    try {
+      const fallback = await withTimeout(
+        retryWithBackoff(() => data.chat.sendMessage({ message: question }), 2),
+        STREAM_TIMEOUT_MS,
+        'sendMessage fallback'
+      )
+      const text = fallback.text ?? ''
+      if (text) {
+        data.history.push({ question, answer: text })
+        yield text
+        return
+      }
+    } catch (err) {
+      console.warn('[Gemini] flash fallback also failed, trying flash-lite', {
+        userId, utteranceId, error: (err as Error).message
+      })
     }
-  } catch (err) {
-    console.warn('[Gemini] flash fallback also failed, trying flash-lite', {
-      userId, utteranceId, error: (err as Error).message
-    })
+  } else {
+    console.warn('[Gemini] first token timed out, going directly to flash-lite', { userId, utteranceId })
   }
 
   // Last resort — gemini-2.5-flash-lite (higher quota, rarely overloaded)
@@ -495,13 +521,13 @@ async function* askFallbackModel(
   const contents = buildContentsFromHistory(data.history)
   contents.push({ role: 'user', parts: [{ text: question }] })
 
-  console.log('[Gemini] using flash-lite fallback', { utteranceId, historyTurns: data.history.length })
+  debugLog('[Gemini] using flash-lite fallback', { utteranceId, historyTurns: data.history.length })
   const stream = await withTimeout(
     ai.models.generateContentStream({
       model: 'gemini-2.5-flash-lite',
       config: {
         systemInstruction: buildSystemPrompt(data.ctx),
-        thinkingConfig: { thinkingBudget: 0 }
+        thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET }
       },
       contents
     }),
@@ -534,13 +560,13 @@ async function* continueWithFallbackModel(
   contents.push({ role: 'model', parts: [{ text: partialAnswer }] })
   contents.push({ role: 'user', parts: [{ text: 'Please continue your previous response from exactly where it stopped. Do not repeat any text. Just continue mid-sentence if needed and finish your answer.' }] })
 
-  console.log('[Gemini] continuing with flash-lite', { utteranceId, partialLength: partialAnswer.length })
+  debugLog('[Gemini] continuing with flash-lite', { utteranceId, partialLength: partialAnswer.length })
   const stream = await withTimeout(
     ai.models.generateContentStream({
       model: 'gemini-2.5-flash-lite',
       config: {
         systemInstruction: buildSystemPrompt(data.ctx),
-        thinkingConfig: { thinkingBudget: 0 }
+        thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET }
       },
       contents
     }),

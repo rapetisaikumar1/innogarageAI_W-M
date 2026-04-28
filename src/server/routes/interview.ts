@@ -5,25 +5,10 @@ import { users, profiles } from '../db/schema'
 import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
 import { initUserSession, generateAnswerStream, endUserSession, hasActiveSession, HistoryTurn } from '../services/gemini'
-import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession } from '../services/codeAnalysis'
-import { downloadCloudinaryRaw } from '../services/cloudinary'
+import { initCodeAnalysisSession, analyzeScreenContent, endCodeAnalysisSession, hasCodeAnalysisSession } from '../services/codeAnalysis'
 
 interface AuthRequest extends FastifyRequest {
   user: { userId: string; email: string }
-}
-
-// Extract text from a PDF buffer using pdf-parse v2
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  try {
-    const { PDFParse } = await import('pdf-parse')
-    const parser = new PDFParse({ data: buffer })
-    const result = await parser.getText()
-    await parser.destroy()
-    return result.text.trim()
-  } catch (err) {
-    console.error('[extractPdfText] FAILED:', (err as Error).message)
-    return ''
-  }
 }
 
 export async function interviewRoutes(app: FastifyInstance): Promise<void> {
@@ -191,6 +176,98 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     })
   })
 
+  // Persistent Q&A WebSocket — avoids creating a new HTTP/SSE request per question.
+  app.get('/interview/ask-stream', { websocket: true }, (socket, request) => {
+    const token = (request.query as Record<string, string>).token
+    if (!token) { socket.close(4001, 'Missing token'); return }
+
+    let userId: string
+    try {
+      const decoded = verifyToken(token)
+      userId = decoded.userId
+    } catch {
+      socket.close(4001, 'Invalid token')
+      return
+    }
+
+    type PendingQuestion = { id: string; text: string }
+
+    const questionQueue: PendingQuestion[] = []
+    let processing = false
+    let closed = false
+
+    const sendJson = (payload: Record<string, unknown>): void => {
+      if (!closed && socket.readyState === 1) socket.send(JSON.stringify(payload))
+    }
+
+    const processQueue = async (): Promise<void> => {
+      if (processing) return
+      processing = true
+
+      try {
+        while (!closed && questionQueue.length > 0) {
+          const item = questionQueue.shift()!
+
+          if (!hasActiveSession(userId)) {
+            sendJson({ type: 'error', id: item.id, error: 'No active interview session' })
+            continue
+          }
+
+          request.log.info({ userId, utteranceId: item.id, textLength: item.text.length }, 'interview/ask-stream received')
+
+          try {
+            for await (const chunk of generateAnswerStream(userId, item.text, item.id)) {
+              if (closed || socket.readyState !== 1) break
+              sendJson({ type: 'chunk', id: item.id, text: chunk })
+            }
+            sendJson({ type: 'done', id: item.id })
+          } catch (err) {
+            request.log.error({ err, userId, utteranceId: item.id }, 'generateAnswerStream failed over WebSocket')
+            const msg = (err as Error).message || 'The AI service is temporarily unavailable. Please try again.'
+            sendJson({ type: 'error', id: item.id, error: msg })
+          }
+        }
+      } finally {
+        processing = false
+        if (!closed && questionQueue.length > 0) void processQueue()
+      }
+    }
+
+    socket.on('message', (data: Buffer, isBinary: boolean) => {
+      if (isBinary) return
+
+      let parsed: { type?: unknown; id?: unknown; text?: unknown }
+      try {
+        parsed = JSON.parse(data.toString()) as { type?: unknown; id?: unknown; text?: unknown }
+      } catch {
+        sendJson({ type: 'error', error: 'Invalid Q&A message' })
+        return
+      }
+
+      if (parsed.type !== 'ask') return
+
+      const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
+      const id = typeof parsed.id === 'string' && parsed.id ? parsed.id : crypto.randomUUID()
+      if (!text) {
+        sendJson({ type: 'error', id, error: 'Text is required' })
+        return
+      }
+
+      questionQueue.push({ id, text })
+      void processQueue()
+    })
+
+    socket.on('close', () => {
+      closed = true
+      questionQueue.length = 0
+      request.log.info({ userId }, 'Q&A WebSocket closed')
+    })
+
+    socket.on('error', (err) => {
+      request.log.error({ err, userId }, 'Q&A WebSocket error')
+    })
+  })
+
   // Start interview session — initializes Gemini with user context
   app.post('/interview/start', { preHandler: authMiddleware }, async (request, reply) => {
     const { userId } = (request as AuthRequest).user
@@ -213,30 +290,9 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       jobRole: profile?.jobRole ?? null
     }, '[DEBUG] /interview/start — profile data from DB')
 
-    // ── Auto-extract resumeText if missing but resumeUrl exists ───────────
-    let resumeText = profile?.resumeText ?? null
+    const resumeText = profile?.resumeText ?? null
     if (!resumeText && profile?.resumeUrl) {
-      request.log.info({ userId }, 'resumeText missing — fetching and extracting from Cloudinary URL')
-      try {
-        // Use Admin API with Basic Auth — bypasses CDN access control restrictions
-        const buffer = await downloadCloudinaryRaw(profile.resumeUrl)
-        console.log(`[ResumeExtract] Fetched OK — size=${buffer.length} firstBytes="${buffer.slice(0, 4).toString()}"`)
-        const extracted = await extractPdfText(buffer)
-        if (extracted) {
-          resumeText = extracted
-          // Save back to DB so future sessions don't need to re-fetch
-          await getDb()
-            .update(profiles)
-            .set({ resumeText: extracted, updatedAt: new Date() })
-            .where(eq(profiles.userId, userId))
-          request.log.info({ userId, resumeTextLength: extracted.length }, 'resumeText extracted and saved to DB')
-        } else {
-          request.log.warn({ userId }, 'PDF fetch succeeded but text extraction returned empty')
-        }
-      } catch (err) {
-        console.error(`[ResumeExtract] FAILED: ${(err as Error).message}`)
-        request.log.error({ userId }, 'Failed to auto-extract resumeText — continuing without it')
-      }
+      request.log.warn({ userId }, 'resumeText missing at interview start — skipping live PDF extraction')
     }
 
     // Accept prior Q&A history so session can be rebuilt after a Railway restart
@@ -260,19 +316,6 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       language: profile?.language ?? null,
       aiInstructions: profile?.aiInstructions ?? null
     }, history)
-
-    // Initialize code analysis session with user context
-    await initCodeAnalysisSession(userId, {
-      name: user.name,
-      resumeText,
-      jobDescription: profile?.jobDescription ?? null,
-      jobRole: profile?.jobRole ?? null,
-      experience: profile?.experience ?? null,
-      interviewType: profile?.interviewType ?? null,
-      company: profile?.company ?? null,
-      language: profile?.language ?? null,
-      aiInstructions: profile?.aiInstructions ?? null
-    })
 
     return { message: 'Interview session started', active: true }
   })
@@ -348,6 +391,27 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     request.log.info({ imageLen: image.length }, 'Code analysis request received')
 
     try {
+      if (!hasCodeAnalysisSession(userId)) {
+        const [user] = await getDb().select().from(users).where(eq(users.id, userId)).limit(1)
+        const [profile] = await getDb().select().from(profiles).where(eq(profiles.userId, userId)).limit(1)
+
+        if (!user) {
+          return reply.code(404).send({ error: 'User not found' })
+        }
+
+        await initCodeAnalysisSession(userId, {
+          name: user.name,
+          resumeText: profile?.resumeText ?? null,
+          jobDescription: profile?.jobDescription ?? null,
+          jobRole: profile?.jobRole ?? null,
+          experience: profile?.experience ?? null,
+          interviewType: profile?.interviewType ?? null,
+          company: profile?.company ?? null,
+          language: profile?.language ?? null,
+          aiInstructions: profile?.aiInstructions ?? null
+        })
+      }
+
       const result = await analyzeScreenContent(userId, image)
       request.log.info({ detected: result.detected, language: result.language }, 'Code analysis result')
       return result

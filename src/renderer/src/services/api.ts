@@ -1,5 +1,212 @@
 const BASE_URL = 'https://innogarage-ai-production.up.railway.app'
+const WS_URL = 'wss://innogarage-ai-production.up.railway.app'
 const REQUEST_TIMEOUT_MS = 30_000 // 30s default timeout
+
+type AskMessage = { type: 'chunk' | 'done' | 'error'; id?: string; text?: string; error?: string }
+type PendingAsk = {
+  accumulated: string
+  onChunk: (chunk: string) => void
+  resolve: (value: string) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+let askSocket: WebSocket | null = null
+let askSocketToken: string | null = null
+let askSocketOpenPromise: Promise<WebSocket> | null = null
+const pendingAsks = new Map<string, PendingAsk>()
+
+function rejectPendingAsks(error: Error): void {
+  for (const [, pending] of pendingAsks) {
+    clearTimeout(pending.timer)
+    pending.reject(error)
+  }
+  pendingAsks.clear()
+}
+
+function closeAskSocket(): void {
+  if (askSocket) {
+    askSocket.onclose = null
+    askSocket.onerror = null
+    askSocket.onmessage = null
+    if (askSocket.readyState === WebSocket.OPEN || askSocket.readyState === WebSocket.CONNECTING) {
+      askSocket.close(1000, 'Interview ended')
+    }
+  }
+  askSocket = null
+  askSocketToken = null
+  askSocketOpenPromise = null
+  rejectPendingAsks(new Error('Q&A WebSocket closed'))
+}
+
+function getAskSocket(): Promise<WebSocket> {
+  const token = localStorage.getItem('token')
+  if (!token) return Promise.reject(new Error('Not authenticated'))
+
+  if (askSocket && askSocketToken === token && askSocket.readyState === WebSocket.OPEN) {
+    return Promise.resolve(askSocket)
+  }
+
+  if (askSocket && askSocketToken === token && askSocket.readyState === WebSocket.CONNECTING && askSocketOpenPromise) {
+    return askSocketOpenPromise
+  }
+
+  closeAskSocket()
+
+  askSocketToken = token
+  askSocket = new WebSocket(`${WS_URL}/interview/ask-stream?token=${encodeURIComponent(token)}`)
+
+  askSocketOpenPromise = new Promise<WebSocket>((resolve, reject) => {
+    const socket = askSocket!
+    const openTimer = setTimeout(() => {
+      reject(new Error('Q&A WebSocket connection timed out'))
+      closeAskSocket()
+    }, 5000)
+
+    socket.onopen = () => {
+      clearTimeout(openTimer)
+      askSocketOpenPromise = null
+      resolve(socket)
+    }
+
+    socket.onerror = () => {
+      clearTimeout(openTimer)
+      askSocketOpenPromise = null
+      reject(new Error('Q&A WebSocket connection failed'))
+    }
+
+    socket.onclose = () => {
+      clearTimeout(openTimer)
+      askSocketOpenPromise = null
+      askSocket = null
+      askSocketToken = null
+      rejectPendingAsks(new Error('Q&A WebSocket closed'))
+    }
+
+    socket.onmessage = (event) => {
+      let message: AskMessage
+      try { message = JSON.parse(event.data as string) as AskMessage } catch { return }
+      const id = message.id
+      if (!id) return
+
+      const pending = pendingAsks.get(id)
+      if (!pending) return
+
+      if (message.type === 'chunk' && message.text) {
+        pending.accumulated += message.text
+        pending.onChunk(message.text)
+        return
+      }
+
+      clearTimeout(pending.timer)
+      pendingAsks.delete(id)
+
+      if (message.type === 'done') {
+        pending.resolve(pending.accumulated)
+      } else if (message.type === 'error') {
+        pending.reject(new Error(message.error || 'Request failed'))
+      }
+    }
+  })
+
+  return askSocketOpenPromise
+}
+
+async function interviewAskWebSocket(
+  text: string,
+  onChunk: (chunk: string) => void
+): Promise<string> {
+  const socket = await getAskSocket()
+  const id = crypto.randomUUID()
+
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingAsks.delete(id)
+      reject(new Error('Request timed out. Please check your connection and try again.'))
+      closeAskSocket()
+    }, 45_000)
+
+    pendingAsks.set(id, { accumulated: '', onChunk, resolve, reject, timer })
+
+    try {
+      socket.send(JSON.stringify({ type: 'ask', id, text }))
+    } catch (err) {
+      clearTimeout(timer)
+      pendingAsks.delete(id)
+      reject(err instanceof Error ? err : new Error('Failed to send question'))
+    }
+  })
+}
+
+async function interviewAskSse(
+  text: string,
+  onChunk: (chunk: string) => void
+): Promise<string> {
+  const token = localStorage.getItem('token')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 45_000)
+
+  try {
+    const response = await fetch(`${BASE_URL}/interview/ask`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ text }),
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        window.location.hash = '#/'
+        throw new Error('Session expired. Please log in again.')
+      }
+      const errBody = await response.json().catch(() => ({ error: 'Request failed' }))
+      throw new Error(errBody.error || 'Request failed')
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let accumulated = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()!  // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') return accumulated
+        let parsed: { text?: string; error?: string }
+        try { parsed = JSON.parse(payload) } catch { continue }
+        if (parsed.error) throw new Error(parsed.error)
+        if (parsed.text) {
+          accumulated += parsed.text
+          onChunk(parsed.text)
+        }
+      }
+    }
+
+    return accumulated
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      throw new Error('Request timed out. Please check your connection and try again.')
+    }
+    if (err instanceof TypeError && (err.message.includes('fetch') || err.message.includes('network'))) {
+      throw new Error('Network error. Please check your internet connection.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function request<T>(
   endpoint: string,
@@ -185,77 +392,25 @@ export const api = {
     text: string,
     onChunk: (chunk: string) => void
   ): Promise<string> => {
-    const token = localStorage.getItem('token')
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 45_000)
-
+    let receivedChunk = false
     try {
-      const response = await fetch(`${BASE_URL}/interview/ask`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ text }),
-        signal: controller.signal
+      return await interviewAskWebSocket(text, (chunk) => {
+        receivedChunk = true
+        onChunk(chunk)
       })
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          localStorage.removeItem('token')
-          localStorage.removeItem('user')
-          window.location.hash = '#/'
-          throw new Error('Session expired. Please log in again.')
-        }
-        const errBody = await response.json().catch(() => ({ error: 'Request failed' }))
-        throw new Error(errBody.error || 'Request failed')
-      }
-
-      const reader = response.body!.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let accumulated = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop()!  // keep incomplete last line
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const payload = line.slice(6).trim()
-          if (payload === '[DONE]') return accumulated
-          let parsed: { text?: string; error?: string }
-          try { parsed = JSON.parse(payload) } catch { continue }
-          if (parsed.error) throw new Error(parsed.error)
-          if (parsed.text) {
-            accumulated += parsed.text
-            onChunk(parsed.text)
-          }
-        }
-      }
-
-      return accumulated
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        throw new Error('Request timed out. Please check your connection and try again.')
-      }
-      if (err instanceof TypeError && (err.message.includes('fetch') || err.message.includes('network'))) {
-        throw new Error('Network error. Please check your internet connection.')
-      }
-      throw err
-    } finally {
-      clearTimeout(timer)
+      if (receivedChunk) throw err
+      return interviewAskSse(text, onChunk)
     }
   },
 
-  interviewEnd: () =>
-    request<{ message: string }>('/interview/end', {
+  interviewEnd: () => {
+    closeAskSocket()
+    return request<{ message: string }>('/interview/end', {
       method: 'POST',
       body: '{}'
-    }),
+    })
+  },
 
   interviewStatus: () =>
     request<{ active: boolean }>('/interview/status'),
