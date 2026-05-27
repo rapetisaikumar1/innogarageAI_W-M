@@ -1,6 +1,8 @@
 import { useAuthStore } from '../store/authStore'
 import { WS_BASE_URL } from './config'
 
+import workletUrl from './pcmProcessorWorklet?worker&url'
+
 /**
  * Audio Pipeline — Deepgram Nova-3 WebSocket streaming.
  *
@@ -229,7 +231,7 @@ async function setupAudioCapture(stream: MediaStream): Promise<void> {
 
   const source = audioContext.createMediaStreamSource(stream)
 
-  await audioContext.audioWorklet.addModule(new URL('./pcmProcessorWorklet.ts', import.meta.url).href)
+  await audioContext.audioWorklet.addModule(workletUrl)
 
   processor = new AudioWorkletNode(audioContext, 'pcm-processor', {
     numberOfInputs: 1,
