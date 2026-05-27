@@ -117,29 +117,3 @@ export async function uploadResume(
     uploadStream.end(fileBuffer)
   })
 }
-
-export function getResumeSignedUrl(publicUrlOrId: string): string {
-  ensureConfig()
-  // Extract public_id from secure_url if a full URL was stored
-  // e.g. https://res.cloudinary.com/<cloud>/raw/upload/v123/innogarage-resumes/file.pdf
-  // Extract version and public_id from the stored secure_url
-  // e.g. https://res.cloudinary.com/<cloud>/raw/upload/v1234567/innogarage-resumes/file.pdf
-  let publicId = publicUrlOrId
-  let version: number | undefined
-  const match = publicUrlOrId.match(/\/upload\/(?:v(\d+)\/)?(.+)$/)
-  if (match) {
-    version = match[1] ? parseInt(match[1], 10) : undefined
-    publicId = match[2]
-  }
-  console.log(`[Cloudinary] getResumeSignedUrl — publicId: ${publicId} | version: ${version}`)
-
-  // cloudinary.url() with sign_url:true embeds the signature in the URL path (s--SIG--)
-  // This works for type:'upload' raw resources and uses a different signature than private_download_url
-  return cloudinary.url(publicId, {
-    resource_type: 'raw',
-    type: 'upload',
-    sign_url: true,
-    secure: true,
-    ...(version ? { version } : {})
-  })
-}

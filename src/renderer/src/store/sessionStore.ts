@@ -11,7 +11,7 @@ export interface PastSession {
 
 interface SessionState {
   sessions: PastSession[]
-  loadSessions: () => void
+  loadSessions: () => Promise<void>
   saveSession: (session: PastSession) => void
   clearAll: () => void
 }
@@ -21,10 +21,16 @@ const STORAGE_KEY = 'ig-past-sessions'
 export const useSessionStore = create<SessionState>((set) => ({
   sessions: [],
 
-  loadSessions: () => {
+  loadSessions: async () => {
+    const legacyRaw = localStorage.getItem(STORAGE_KEY)
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      const sessions: PastSession[] = raw ? (JSON.parse(raw) as PastSession[]) : []
+      const storedSessions = await window.api.storageGet<PastSession[]>('sessions')
+      const legacySessions: PastSession[] = legacyRaw ? (JSON.parse(legacyRaw) as PastSession[]) : []
+      const sessions = storedSessions ?? legacySessions
+      if (legacyRaw) {
+        localStorage.removeItem(STORAGE_KEY)
+        await window.api.storageSet('sessions', sessions)
+      }
       set({ sessions })
     } catch {
       set({ sessions: [] })
@@ -34,17 +40,15 @@ export const useSessionStore = create<SessionState>((set) => ({
   saveSession: (session) => {
     set((state) => {
       const sessions = [session, ...state.sessions].slice(0, 100)
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
-      } catch {
-        // localStorage quota exceeded — skip persistence
-      }
+      localStorage.removeItem(STORAGE_KEY)
+      void window.api.storageSet('sessions', sessions)
       return { sessions }
     })
   },
 
   clearAll: () => {
     localStorage.removeItem(STORAGE_KEY)
+    void window.api.storageDelete('sessions')
     set({ sessions: [] })
   }
 }))

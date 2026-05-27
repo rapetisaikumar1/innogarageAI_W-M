@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+type PersistedStorageKey = 'auth' | 'profile' | 'sessions'
+
 const api = {
   minimize: (): void => ipcRenderer.send('window:minimize'),
   maximize: (): void => ipcRenderer.send('window:maximize'),
@@ -9,6 +11,9 @@ const api = {
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
   platform: process.platform,
   downloadFile: (url: string): Promise<void> => ipcRenderer.invoke('download-file', url),
+  storageGet: <T>(key: PersistedStorageKey): Promise<T | null> => ipcRenderer.invoke('storage:get', key),
+  storageSet: <T>(key: PersistedStorageKey, value: T): Promise<void> => ipcRenderer.invoke('storage:set', key, value),
+  storageDelete: (key: PersistedStorageKey): Promise<void> => ipcRenderer.invoke('storage:delete', key),
   googleAuth: (): Promise<
     | {
         type: 'login'

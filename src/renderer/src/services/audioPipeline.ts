@@ -1,3 +1,6 @@
+import { useAuthStore } from '../store/authStore'
+import { WS_BASE_URL } from './config'
+
 /**
  * Audio Pipeline — Deepgram Nova-3 WebSocket streaming.
  *
@@ -10,11 +13,10 @@
  * the final transcript fires immediately — no silence gate, no blob encoding.
  */
 
-const WS_URL   = 'wss://innogarage-ai-production.up.railway.app'
-export const BASE_URL = 'https://innogarage-ai-production.up.railway.app'
+const WS_URL = WS_BASE_URL
 const DEBUG    = import.meta.env.DEV
 const TARGET_SAMPLE_RATE = 16000  // Deepgram linear16 expects 16kHz
-const MAX_WS_RECONNECTS = 10     // auto-reconnect up to 10 times on transient disconnect
+const MAX_WS_RECONNECT_DELAY_MS = 10_000
 
 type AudioSource = 'mic' | 'system'
 
@@ -28,7 +30,7 @@ interface AudioPipelineCallbacks {
 
 let mediaStream:     MediaStream | null         = null
 let audioContext:    AudioContext | null        = null
-let processor:       ScriptProcessorNode | null = null
+let processor:       AudioWorkletNode | null    = null
 let wsConn:          WebSocket | null           = null
 let currentSource:   AudioSource               = 'mic'
 let callbacks:       AudioPipelineCallbacks | null = null
@@ -53,21 +55,31 @@ function float32ToInt16(input: Float32Array): Int16Array {
 // ── WebSocket connection to server proxy ──────────────────────────────────────
 
 function openWebSocket(token: string): WebSocket {
-  const url = `${WS_URL}/interview/stream?token=${encodeURIComponent(token)}`
+  const url = `${WS_URL}/interview/stream`
   dbg('Opening WebSocket:', url)
   const ws = new WebSocket(url)
   ws.binaryType = 'arraybuffer'
 
-  ws.onopen = () => dbg('WebSocket open ✓')
+  ws.onopen = () => {
+    wsReconnects = 0
+    dbg('WebSocket open ✓')
+    ws.send(JSON.stringify({ type: 'auth', token }))
+  }
 
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data as string) as {
         type: string
+        ok?: boolean
         text?: string
         isFinal?: boolean
         speechFinal?: boolean
         message?: string
+      }
+
+      if (msg.type === 'auth') {
+        dbg('WebSocket authenticated ✓')
+        return
       }
 
       if (msg.type === 'transcript' && msg.text?.trim()) {
@@ -91,27 +103,73 @@ function openWebSocket(token: string): WebSocket {
 
   ws.onclose = (e) => {
     dbg(`WebSocket closed: code=${e.code} reason=${e.reason}`)
-    if (isRunning && e.code !== 1000 && e.code !== 4001) {
+    // 1000=normal, 4001=auth rejected, 4002=server config error, 4003=upstream failure — don't reconnect
+    const fatalCodes = new Set([1000, 4001, 4002, 4003])
+    if (isRunning && !fatalCodes.has(e.code)) {
       // Transient disconnect — try to reconnect
-      if (wsReconnects < MAX_WS_RECONNECTS) {
-        wsReconnects++
-        const delay = wsReconnects * 1000 // 1s, 2s, 3s backoff
-        dbg(`Attempting WS reconnect #${wsReconnects} in ${delay}ms`)
-        setTimeout(() => {
-          if (!isRunning) return
-          try {
-            wsConn = openWebSocket(token)
-          } catch {
-            callbacks?.onError('Failed to reconnect audio stream')
-          }
-        }, delay)
-      } else {
-        callbacks?.onError(`Stream disconnected (${e.code})`)
-      }
+      wsReconnects++
+      const delay = Math.min(wsReconnects * 1000, MAX_WS_RECONNECT_DELAY_MS)
+      dbg(`Attempting WS reconnect #${wsReconnects} in ${delay}ms`)
+      setTimeout(() => {
+        if (!isRunning) return
+        try {
+          wsConn = openWebSocket(token)
+        } catch {
+          callbacks?.onError('Failed to reconnect audio stream')
+        }
+      }, delay)
     }
   }
 
   return ws
+}
+
+async function waitForWebSocketAuth(ws: WebSocket): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('WebSocket authentication timeout'))
+    }, 5000)
+
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      ws.removeEventListener('message', handleMessage)
+      ws.removeEventListener('error', handleError)
+      ws.removeEventListener('close', handleClose)
+    }
+
+    const handleMessage = (event: MessageEvent): void => {
+      let msg: { type?: string; ok?: boolean; error?: string }
+      try {
+        msg = JSON.parse(event.data as string) as { type?: string; ok?: boolean; error?: string }
+      } catch {
+        return
+      }
+
+      if (msg.type !== 'auth') return
+      cleanup()
+      if (msg.ok) {
+        resolve()
+        return
+      }
+      reject(new Error(msg.error || 'WebSocket authentication failed'))
+    }
+
+    const handleError = (): void => {
+      cleanup()
+      reject(new Error('WebSocket failed to connect'))
+    }
+
+    const handleClose = (e: CloseEvent): void => {
+      cleanup()
+      const reason = e.reason ? ` — ${e.reason}` : ''
+      reject(new Error(`WebSocket closed during authentication (code: ${e.code}${reason})`))
+    }
+
+    ws.addEventListener('message', handleMessage)
+    ws.addEventListener('error', handleError)
+    ws.addEventListener('close', handleClose)
+  })
 }
 
 // ── Stream helpers ────────────────────────────────────────────────────────────
@@ -171,11 +229,17 @@ async function setupAudioCapture(stream: MediaStream): Promise<void> {
 
   const source = audioContext.createMediaStreamSource(stream)
 
-  // bufferSize 2048 = ~128ms of audio at 16kHz — lower latency
-  processor = audioContext.createScriptProcessor(2048, 1, 1)
-  processor.onaudioprocess = (e) => {
+  await audioContext.audioWorklet.addModule(new URL('./pcmProcessorWorklet.ts', import.meta.url).href)
+
+  processor = new AudioWorkletNode(audioContext, 'pcm-processor', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    channelCount: 1,
+    outputChannelCount: [1]
+  })
+  processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
     if (!isRunning || wsConn?.readyState !== WebSocket.OPEN) return
-    const float32 = e.inputBuffer.getChannelData(0)
+    const float32 = event.data
     const int16 = float32ToInt16(float32)
     wsConn.send(int16.buffer)
   }
@@ -188,7 +252,7 @@ async function setupAudioCapture(stream: MediaStream): Promise<void> {
 
   source.connect(processor)
   processor.connect(streamDest)
-  dbg('  ✓ ScriptProcessor connected via MediaStreamDestination — streaming PCM to WebSocket')
+  dbg('  ✓ AudioWorklet connected via MediaStreamDestination — streaming PCM to WebSocket')
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -198,7 +262,7 @@ function teardown(): void {
 
   if (processor) {
     processor.disconnect()
-    processor.onaudioprocess = null
+    processor.port.onmessage = null
     processor = null
   }
   if (audioContext) {
@@ -231,7 +295,7 @@ export async function startAudioPipeline(
 
   dbg('startAudioPipeline — source:', source)
 
-  const token = localStorage.getItem('token')
+  const token = useAuthStore.getState().token
   if (!token) {
     isRunning = false
     cbs.onError('Not authenticated')
@@ -246,14 +310,7 @@ export async function startAudioPipeline(
 
     // Open WebSocket first so it's ready when PCM starts flowing
     wsConn = openWebSocket(token)
-
-    // Wait for WS to open (max 5s)
-    await new Promise<void>((resolve, reject) => {
-      if (wsConn!.readyState === WebSocket.OPEN) { resolve(); return }
-      const t = setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000)
-      wsConn!.addEventListener('open',  () => { clearTimeout(t); resolve() }, { once: true })
-      wsConn!.addEventListener('error', () => { clearTimeout(t); reject(new Error('WebSocket failed to connect')) }, { once: true })
-    })
+    await waitForWebSocketAuth(wsConn)
 
     await setupAudioCapture(mediaStream)
     wsReconnects = 0
@@ -281,7 +338,7 @@ export async function switchAudioSource(newSource: AudioSource): Promise<void> {
   dbg('switchAudioSource:', currentSource, '->', newSource)
 
   const cbs   = callbacks
-  const token = localStorage.getItem('token')
+  const token = useAuthStore.getState().token
   if (!token) { cbs.onError('Not authenticated'); return }
 
   teardown()
@@ -294,12 +351,7 @@ export async function switchAudioSource(newSource: AudioSource): Promise<void> {
       : await getMicStream()
 
     wsConn = openWebSocket(token)
-    await new Promise<void>((resolve, reject) => {
-      if (wsConn!.readyState === WebSocket.OPEN) { resolve(); return }
-      const t = setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000)
-      wsConn!.addEventListener('open',  () => { clearTimeout(t); resolve() }, { once: true })
-      wsConn!.addEventListener('error', () => { clearTimeout(t); reject(new Error('WebSocket failed to connect')) }, { once: true })
-    })
+    await waitForWebSocketAuth(wsConn)
 
     await setupAudioCapture(mediaStream)
     dbg('switchAudioSource complete ✓')

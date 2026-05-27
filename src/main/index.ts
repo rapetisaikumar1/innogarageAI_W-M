@@ -1,4 +1,5 @@
-import { app, shell, BrowserWindow, ipcMain, net, desktopCapturer } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, net, desktopCapturer, safeStorage } from 'electron'
+import { promises as fs } from 'node:fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { platform } from './platform'
@@ -19,6 +20,67 @@ let desiredContentProtection = false
 let stealthModeEnabled = false
 let cpTimers: ReturnType<typeof setTimeout>[] = []
 let stealthInterval: ReturnType<typeof setInterval> | null = null
+
+type PersistedKey = 'auth' | 'profile' | 'sessions'
+type PersistedState = Partial<Record<PersistedKey, unknown>>
+
+function getPersistedStatePath(): string {
+  return join(app.getPath('userData'), 'renderer-state.json')
+}
+
+async function readPersistedState(): Promise<PersistedState> {
+  try {
+    const raw = await fs.readFile(getPersistedStatePath(), 'utf8')
+    const parsed = JSON.parse(raw) as { encrypted?: boolean; data?: string }
+    if (typeof parsed.data !== 'string') return {}
+
+    const payload = parsed.encrypted
+      ? (safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(parsed.data, 'base64')) : '{}')
+      : parsed.data
+
+    const state = JSON.parse(payload)
+    return state && typeof state === 'object' ? (state as PersistedState) : {}
+  } catch {
+    return {}
+  }
+}
+
+let _warnedPlaintext = false
+
+async function writePersistedState(state: PersistedState): Promise<void> {
+  const payload = JSON.stringify(state)
+  const isEncrypted = safeStorage.isEncryptionAvailable()
+  if (!isEncrypted && !_warnedPlaintext) {
+    console.warn('[storage] safeStorage encryption unavailable — persisting state as plaintext')
+    _warnedPlaintext = true
+  }
+  const serialized = isEncrypted
+    ? JSON.stringify({ encrypted: true, data: safeStorage.encryptString(payload).toString('base64') })
+    : JSON.stringify({ encrypted: false, data: payload })
+
+  await fs.writeFile(getPersistedStatePath(), serialized, 'utf8')
+}
+
+async function getPersistedItem<T>(key: PersistedKey): Promise<T | null> {
+  const state = await readPersistedState()
+  return (state[key] as T | undefined) ?? null
+}
+
+// Serialized write queue — prevents concurrent read-modify-write races when
+// multiple stores fire storageSet simultaneously (e.g. login + profile load).
+let _writeQueue: Promise<void> = Promise.resolve()
+
+async function setPersistedItem<T>(key: PersistedKey, value: T | null): Promise<void> {
+  const next = _writeQueue.then(async () => {
+    const state = await readPersistedState()
+    if (value === null) delete state[key]
+    else state[key] = value
+    await writePersistedState(state)
+  })
+  // Absorb errors so a single failed write doesn't break the queue for all future writes.
+  _writeQueue = next.catch(() => {})
+  return next
+}
 
 function applyDesiredContentProtection(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -165,6 +227,18 @@ ipcMain.handle('open-external', (_event, url: string) => {
 // Native file download — saves to system Downloads folder
 ipcMain.handle('download-file', (_event, url: string) => {
   mainWindow?.webContents.downloadURL(url)
+})
+
+ipcMain.handle('storage:get', async (_event, key: PersistedKey) => {
+  return getPersistedItem(key)
+})
+
+ipcMain.handle('storage:set', async (_event, key: PersistedKey, value: unknown) => {
+  await setPersistedItem(key, value)
+})
+
+ipcMain.handle('storage:delete', async (_event, key: PersistedKey) => {
+  await setPersistedItem(key, null)
 })
 
 // Desktop audio capture — returns source ID for system audio

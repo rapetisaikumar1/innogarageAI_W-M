@@ -12,7 +12,7 @@ import { Power } from 'lucide-react'
 
 export default function InterviewScreen(): React.JSX.Element {
   const navigate = useNavigate()
-  const { isLoggedIn } = useAuthStore()
+  const { isLoggedIn, token } = useAuthStore()
   const {
     isInterviewActive,
     audioSource,
@@ -31,6 +31,7 @@ export default function InterviewScreen(): React.JSX.Element {
     updateQAPairAnswer,
     setProcessing,
     setError,
+    setSessionPersisted,
     setCodeSuggestion,
     setAnalyzingScreen,
     setScreenCaptureActive
@@ -191,13 +192,16 @@ export default function InterviewScreen(): React.JSX.Element {
         // getState() will return empty qaPairs — no duplicate save).
         const state = useInterviewStore.getState()
         if (state.qaPairs.length > 0 || state.transcriptions.length > 0) {
-          useSessionStore.getState().saveSession({
-            id: crypto.randomUUID(),
-            date: Date.now(),
-            duration: state.elapsedSeconds,
-            qaPairs: [...state.qaPairs],
-            transcriptions: [...state.transcriptions]
-          })
+          if (!state.sessionPersisted) {
+            useSessionStore.getState().saveSession({
+              id: crypto.randomUUID(),
+              date: Date.now(),
+              duration: state.elapsedSeconds,
+              qaPairs: [...state.qaPairs],
+              transcriptions: [...state.transcriptions]
+            })
+            setSessionPersisted(true)
+          }
         }
 
         stopAudioPipeline()
@@ -206,7 +210,7 @@ export default function InterviewScreen(): React.JSX.Element {
         sessionStartedRef.current = false
       }
     }
-  }, [])
+  }, [setSessionPersisted])
 
   // Handle audio source switch from navbar (via store)
   useEffect(() => {
@@ -236,8 +240,11 @@ export default function InterviewScreen(): React.JSX.Element {
 
     try {
       setAnalyzingScreen(true)
+      if (!token) {
+        setError('Session expired. Please sign in again.')
+        return
+      }
       if (!screenCaptureInitializedRef.current) {
-        const token = localStorage.getItem('token') || ''
         await startScreenCapture({
           token,
           onSuggestion: (result) => {

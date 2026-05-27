@@ -5,7 +5,7 @@ import http from 'http'
 import mammoth from 'mammoth'
 import { getDb } from '../db'
 import { profiles, users, plans } from '../db/schema'
-import { authMiddleware, verifyToken } from '../middleware/auth'
+import { authMiddleware } from '../middleware/auth'
 import { uploadResume } from '../services/cloudinary'
 
 interface AuthRequest extends FastifyRequest {
@@ -42,8 +42,10 @@ function pickProfileUpdates(body: unknown): ProfileUpdateBody {
 async function extractResumeText(buffer: Buffer, mimeType: string): Promise<string> {
   try {
     if (mimeType === 'application/pdf') {
-      const pdfParse = (await import('pdf-parse')).default
-      const result = await pdfParse(buffer)
+      const { PDFParse } = await import('pdf-parse')
+      const parser = new PDFParse({ data: buffer })
+      const result = await parser.getText()
+      await parser.destroy()
       return result.text.trim()
     }
     if (
@@ -53,8 +55,8 @@ async function extractResumeText(buffer: Buffer, mimeType: string): Promise<stri
       const result = await mammoth.extractRawText({ buffer })
       return result.value.trim()
     }
-  } catch {
-    // Non-fatal — continue without text
+  } catch (err) {
+    console.error('[Profile] Failed to extract resume text:', err)
   }
   return ''
 }
@@ -136,6 +138,9 @@ export async function profileRoutes(app: FastifyInstance): Promise<void> {
     const fileBuffer = Buffer.concat(chunks)
 
     const resumeText = await extractResumeText(fileBuffer, data.mimetype)
+    const warning = resumeText
+      ? null
+      : 'Resume uploaded, but its text could not be extracted. AI answers may be less personalized until you upload a clearer PDF or DOCX.'
     console.log(`[Profile] resume upload — mimetype=${data.mimetype} fileSize=${fileBuffer.length}B extractedTextLength=${resumeText.length}`)
     const { url } = await uploadResume(fileBuffer, data.filename)
 
@@ -153,7 +158,7 @@ export async function profileRoutes(app: FastifyInstance): Promise<void> {
       .returning()
 
     if (updated) {
-      return { profile: updated }
+      return warning ? { profile: updated, warning } : { profile: updated }
     }
 
     const [created] = await getDb()
@@ -161,21 +166,13 @@ export async function profileRoutes(app: FastifyInstance): Promise<void> {
       .values({ userId, ...resumeData, isUpdated: true })
       .returning()
 
-    return { profile: created }
+    return warning ? { profile: created, warning } : { profile: created }
   })
 
   // Proxy resume — streams content from Cloudinary server-to-server via Node https
-  // Token accepted as query param so iframes can load without custom headers
-  app.get('/profile/resume/proxy', async (request, reply) => {
-    const { token, download } = request.query as { token?: string; download?: string }
-    if (!token) return reply.code(401).send({ error: 'Unauthorized' })
-
-    let userId: string
-    try {
-      userId = verifyToken(token).userId
-    } catch {
-      return reply.code(401).send({ error: 'Invalid token' })
-    }
+  app.get('/profile/resume/proxy', { preHandler: authMiddleware }, async (request, reply) => {
+    const { userId } = (request as AuthRequest).user
+    const { download } = request.query as { download?: string }
 
     const [profile] = await getDb().select().from(profiles).where(eq(profiles.userId, userId)).limit(1)
     if (!profile?.resumeUrl) return reply.code(404).send({ error: 'No resume found' })

@@ -11,10 +11,36 @@ import { interviewRoutes } from './routes/interview'
 config()
 
 const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 })
+const defaultAllowedOrigins = [
+  'https://innogarage-ai-production.up.railway.app',
+  'http://localhost:5173'
+]
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+function isAllowedOrigin(origin?: string): boolean {
+  if (!origin || origin === 'null' || origin.startsWith('file://')) return true
+  return [...defaultAllowedOrigins, ...allowedOrigins].includes(origin)
+}
+
+const REQUIRED_ENV_VARS = ['DATABASE_URL', 'JWT_SECRET', 'DEEPGRAM_API_KEY']
+for (const key of REQUIRED_ENV_VARS) {
+  if (!process.env[key]) {
+    console.warn(`[server] WARNING: environment variable ${key} is not set — dependent features will fail`)
+  }
+}
 
 async function start(): Promise<void> {
   await app.register(cors, {
-    origin: '*',
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true)
+        return
+      }
+      callback(new Error('Origin not allowed'), false)
+    },
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   })
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } })

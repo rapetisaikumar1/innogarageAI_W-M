@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify'
-import { eq } from 'drizzle-orm'
+import { and, desc, eq, gt } from 'drizzle-orm'
 import { getDb } from '../db'
-import { users, profiles } from '../db/schema'
+import { users, profiles, plans } from '../db/schema'
 import { authMiddleware, verifyToken } from '../middleware/auth'
 import { DeepgramClient } from '@deepgram/sdk'
 import { initUserSession, generateAnswerStream, endUserSession, hasActiveSession, HistoryTurn } from '../services/gemini'
@@ -11,28 +11,42 @@ interface AuthRequest extends FastifyRequest {
   user: { userId: string; email: string }
 }
 
+async function getActivePlan(userId: string) {
+  const [activePlan] = await getDb()
+    .select()
+    .from(plans)
+    .where(and(eq(plans.userId, userId), eq(plans.isActive, true), gt(plans.expiresAt, new Date())))
+    .orderBy(desc(plans.createdAt))
+    .limit(1)
+
+  return activePlan ?? null
+}
+
 export async function interviewRoutes(app: FastifyInstance): Promise<void> {
-  // ── Deepgram WebSocket proxy ──────────────────────────────────────────────
-  // Renderer streams raw PCM → this endpoint → Deepgram Nova-3
-  // JWT passed as ?token= query param (WebSocket can't set headers)
-  app.get('/interview/stream', { websocket: true }, (socket, request) => {
-    // Authenticate via query param token
-    const token = (request.query as Record<string, string>).token
-    if (!token) { socket.close(4001, 'Missing token'); return }
-
-    let userId: string
-    try {
-      const decoded = verifyToken(token)
-      userId = decoded.userId
-    } catch {
-      socket.close(4001, 'Invalid token')
-      return
+  // Per-user rate limit for code-suggest (10 requests per minute)
+  const codeSuggestBucket = new Map<string, { count: number; resetAt: number }>()
+  const CODE_SUGGEST_LIMIT = 40
+  const CODE_SUGGEST_WINDOW_MS = 60 * 1000
+  // Clean up stale buckets every 10 minutes
+  const _codeSuggestCleanup = setInterval(() => {
+    const now = Date.now()
+    for (const [uid, bucket] of codeSuggestBucket) {
+      if (bucket.resetAt <= now) codeSuggestBucket.delete(uid)
     }
+  }, 10 * 60 * 1000)
+  _codeSuggestCleanup.unref?.()
 
-    const apiKey = process.env.DEEPGRAM_API_KEY
-    if (!apiKey) { socket.close(4002, 'Deepgram API key not configured'); return }
-
-    request.log.info({ userId }, 'Deepgram stream started')
+  // ── Deepgram WebSocket proxy ──────────────────────────────────────────────
+  // Renderer streams raw PCM → this endpoint → Deepgram Nova-3.
+  // Renderer authenticates immediately after connect via a text auth message.
+  app.get('/interview/stream', { websocket: true }, (socket, request) => {
+    let userId: string | null = null
+    let authenticated = false
+    const authTimeout = setTimeout(() => {
+      if (!authenticated && socket.readyState === 1) {
+        socket.close(4001, 'Authentication timed out')
+      }
+    }, 5000)
 
     const toAudioFrame = (data: Buffer): ArrayBuffer => {
       return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
@@ -43,9 +57,167 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     // eslint-disable-next-line prefer-const
     let dgConn: { getReadyState: () => number; send: (b: ArrayBuffer) => void; requestClose: () => void } | null = null
 
+    const initializeDeepgram = (token: string): void => {
+      try {
+        const decoded = verifyToken(token)
+        userId = decoded.userId
+      } catch {
+        socket.close(4001, 'Invalid token')
+        return
+      }
+
+      const apiKey = process.env.DEEPGRAM_API_KEY
+      if (!apiKey) {
+        request.log.error('DEEPGRAM_API_KEY is not configured — rejecting stream connection')
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify({ type: 'auth', ok: false, error: 'Transcription service is not available. Please contact support.' }))
+        }
+        socket.close(4002, 'Deepgram API key not configured')
+        return
+      }
+
+      authenticated = true
+      clearTimeout(authTimeout)
+      request.log.info({ userId }, 'Deepgram stream started')
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'auth', ok: true }))
+      }
+
+      // Async IIFE — @fastify/websocket v11 requires a sync handler signature
+      ;(async () => {
+        const deepgram = new DeepgramClient({ key: apiKey })
+
+        // listen.live() constructs ListenLiveClient and connects immediately
+        const conn = deepgram.listen.live({
+          model: 'nova-3',
+          language: 'en',
+          smart_format: true,
+          punctuate: true,
+          interim_results: true,
+          utterance_end_ms: 1200,          // 1.2 s of silence → UtteranceEnd fallback
+          endpointing: 1000,               // 1000 ms silence → speech_final
+          encoding: 'linear16',
+          sample_rate: 16000,
+          channels: 1,
+          filler_words: true,              // capture "um", "uh" for natural transcript
+          diarize: false,                  // single speaker — skip diarization overhead
+          numerals: true,                  // convert spoken numbers to digits for accuracy
+          no_delay: true,                  // minimize latency — send results as soon as available
+          keywords: [],                    // can be populated per-user for domain-specific terms
+        })
+
+        // Accumulate all is_final words until UtteranceEnd fires
+        let utteranceBuffer = ''
+
+        conn.on('open', () => {
+          request.log.info({ userId }, 'Deepgram WS open — flushing buffer')
+          dgConn = conn
+          // Flush audio that arrived before Deepgram was ready
+          for (const chunk of audioBuffer) conn.send(chunk)
+          audioBuffer.length = 0
+        })
+
+        conn.on('Results', (msg) => {
+          const result = msg as {
+            type: string
+            channel?: { alternatives?: Array<{ transcript?: string }> }
+            is_final?: boolean
+            speech_final?: boolean
+          }
+          const transcript = result.channel?.alternatives?.[0]?.transcript ?? ''
+          if (!transcript) return
+
+          if (result.is_final) {
+            // Accumulate finalized words into utterance buffer
+            utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
+
+            // speech_final fires at endpointing (300ms silence) — send immediately.
+            if (result.speech_final) {
+              const fullText = utteranceBuffer.trim()
+              // Only clear buffer AFTER confirming the socket is open to send.
+              // If socket is closed here, leave buffer for UtteranceEnd fallback.
+              if (fullText && socket.readyState === 1) {
+                utteranceBuffer = ''
+                request.log.info({ userId }, 'speech_final — sending utterance')
+                socket.send(JSON.stringify({
+                  type: 'transcript',
+                  text: fullText,
+                  isFinal: true,
+                  speechFinal: true
+                }))
+              }
+            }
+          } else {
+            // Interim results — forward for live display only
+            if (socket.readyState === 1) {
+              socket.send(JSON.stringify({
+                type: 'transcript',
+                text: transcript,
+                isFinal: false,
+                speechFinal: false
+              }))
+            }
+          }
+        })
+
+        conn.on('UtteranceEnd', () => {
+          // Fallback: flush any buffer that speech_final didn't already send.
+          const fullText = utteranceBuffer.trim()
+          if (fullText && socket.readyState === 1) {
+            request.log.info({ userId }, 'UtteranceEnd fallback — sending remaining buffer')
+            socket.send(JSON.stringify({
+              type: 'transcript',
+              text: fullText,
+              isFinal: true,
+              speechFinal: true
+            }))
+            utteranceBuffer = ''
+          } else {
+            // Socket closed or nothing to send — just clear the buffer
+            utteranceBuffer = ''
+          }
+        })
+
+        conn.on('error', (err) => {
+          request.log.error({ err }, 'Deepgram error')
+          if (socket.readyState === 1) {
+            socket.send(JSON.stringify({ type: 'error', message: String(err) }))
+          }
+        })
+
+        conn.on('close', () => {
+          request.log.info({ userId }, 'Deepgram connection closed')
+        })
+      })().catch((err) => {
+        request.log.error({ err }, 'Failed to initialize Deepgram connection')
+        try { socket.close(4003, 'Failed to connect to Deepgram') } catch { /* already closed */ }
+      })
+    }
+
     // Forward raw PCM from renderer → buffer or Deepgram (WebSocket is audio-only)
     socket.on('message', (data: Buffer, isBinary: boolean) => {
-      if (!isBinary) return  // ignore non-binary frames
+      if (!authenticated) {
+        if (isBinary) return
+
+        let parsed: { type?: unknown; token?: unknown }
+        try {
+          parsed = JSON.parse(data.toString()) as { type?: unknown; token?: unknown }
+        } catch {
+          socket.close(4001, 'Invalid auth message')
+          return
+        }
+
+        if (parsed.type !== 'auth' || typeof parsed.token !== 'string' || !parsed.token) {
+          socket.close(4001, 'Authentication required')
+          return
+        }
+
+        initializeDeepgram(parsed.token)
+        return
+      }
+
+      if (!isBinary) return
+
       const audioFrame = toAudioFrame(data)
       if (dgConn && dgConn.getReadyState() === 1) {
         dgConn.send(audioFrame)
@@ -56,139 +228,27 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     })
 
     socket.on('close', () => {
-      request.log.info({ userId }, 'Renderer WebSocket closed — finishing Deepgram')
+      clearTimeout(authTimeout)
+      request.log.info({ userId: userId ?? 'unauthenticated' }, 'Renderer WebSocket closed — finishing Deepgram')
       dgConn?.requestClose()
     })
 
     socket.on('error', (err) => {
-      request.log.error({ err }, 'Renderer WebSocket error')
+      clearTimeout(authTimeout)
+      request.log.error({ err, userId: userId ?? 'unauthenticated' }, 'Renderer WebSocket error')
       dgConn?.requestClose()
-    })
-
-    // Async IIFE — @fastify/websocket v11 requires a sync handler signature
-    ;(async () => {
-      const deepgram = new DeepgramClient({ key: apiKey })
-
-      // listen.live() constructs ListenLiveClient and connects immediately
-      const conn = deepgram.listen.live({
-        model: 'nova-3',
-        language: 'en',
-        smart_format: true,
-        punctuate: true,
-        interim_results: true,
-        utterance_end_ms: 1200,          // 1.2 s of silence → UtteranceEnd fallback
-        endpointing: 1000,               // 1000 ms silence → speech_final
-        encoding: 'linear16',
-        sample_rate: 16000,
-        channels: 1,
-        filler_words: true,              // capture "um", "uh" for natural transcript
-        diarize: false,                  // single speaker — skip diarization overhead
-        numerals: true,                  // convert spoken numbers to digits for accuracy
-        no_delay: true,                  // minimize latency — send results as soon as available
-        keywords: [],                    // can be populated per-user for domain-specific terms
-      })
-
-      // Accumulate all is_final words until UtteranceEnd fires
-      let utteranceBuffer = ''
-
-      conn.on('open', () => {
-        request.log.info({ userId }, 'Deepgram WS open — flushing buffer')
-        dgConn = conn
-        // Flush audio that arrived before Deepgram was ready
-        for (const chunk of audioBuffer) conn.send(chunk)
-        audioBuffer.length = 0
-      })
-
-      conn.on('Results', (msg) => {
-        const result = msg as {
-          type: string
-          channel?: { alternatives?: Array<{ transcript?: string }> }
-          is_final?: boolean
-          speech_final?: boolean
-        }
-        const transcript = result.channel?.alternatives?.[0]?.transcript ?? ''
-        if (!transcript) return
-
-        if (result.is_final) {
-          // Accumulate finalized words into utterance buffer
-          utteranceBuffer += (utteranceBuffer ? ' ' : '') + transcript
-
-          // speech_final fires at endpointing (300ms silence) — send immediately.
-          if (result.speech_final) {
-            const fullText = utteranceBuffer.trim()
-            // Only clear buffer AFTER confirming the socket is open to send.
-            // If socket is closed here, leave buffer for UtteranceEnd fallback.
-            if (fullText && socket.readyState === 1) {
-              utteranceBuffer = ''
-              request.log.info({ userId, text: fullText }, 'speech_final — sending utterance')
-              socket.send(JSON.stringify({
-                type: 'transcript',
-                text: fullText,
-                isFinal: true,
-                speechFinal: true
-              }))
-            }
-          }
-        } else {
-          // Interim results — forward for live display only
-          if (socket.readyState === 1) {
-            socket.send(JSON.stringify({
-              type: 'transcript',
-              text: transcript,
-              isFinal: false,
-              speechFinal: false
-            }))
-          }
-        }
-      })
-
-      conn.on('UtteranceEnd', () => {
-        // Fallback: flush any buffer that speech_final didn't already send.
-        const fullText = utteranceBuffer.trim()
-        if (fullText && socket.readyState === 1) {
-          request.log.info({ userId, text: fullText }, 'UtteranceEnd fallback — sending remaining buffer')
-          socket.send(JSON.stringify({
-            type: 'transcript',
-            text: fullText,
-            isFinal: true,
-            speechFinal: true
-          }))
-          utteranceBuffer = ''
-        } else {
-          // Socket closed or nothing to send — just clear the buffer
-          utteranceBuffer = ''
-        }
-      })
-
-      conn.on('error', (err) => {
-        request.log.error({ err }, 'Deepgram error')
-        if (socket.readyState === 1) {
-          socket.send(JSON.stringify({ type: 'error', message: String(err) }))
-        }
-      })
-
-      conn.on('close', () => {
-        request.log.info({ userId }, 'Deepgram connection closed')
-      })
-    })().catch((err) => {
-      request.log.error({ err }, 'Failed to initialize Deepgram connection')
-      try { socket.close(4003, 'Failed to connect to Deepgram') } catch { /* already closed */ }
     })
   })
 
   // Persistent Q&A WebSocket — avoids creating a new HTTP/SSE request per question.
   app.get('/interview/ask-stream', { websocket: true }, (socket, request) => {
-    const token = (request.query as Record<string, string>).token
-    if (!token) { socket.close(4001, 'Missing token'); return }
-
-    let userId: string
-    try {
-      const decoded = verifyToken(token)
-      userId = decoded.userId
-    } catch {
-      socket.close(4001, 'Invalid token')
-      return
-    }
+    let userId: string | null = null
+    let authenticated = false
+    const authTimeout = setTimeout(() => {
+      if (!authenticated && socket.readyState === 1) {
+        socket.close(4001, 'Authentication timed out')
+      }
+    }, 5000)
 
     type PendingQuestion = { id: string; text: string }
 
@@ -207,6 +267,10 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       try {
         while (!closed && questionQueue.length > 0) {
           const item = questionQueue.shift()!
+          if (!userId) {
+            sendJson({ type: 'error', id: item.id, error: 'Authentication required' })
+            continue
+          }
 
           if (!hasActiveSession(userId)) {
             sendJson({ type: 'error', id: item.id, error: 'No active interview session' })
@@ -236,11 +300,34 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     socket.on('message', (data: Buffer, isBinary: boolean) => {
       if (isBinary) return
 
-      let parsed: { type?: unknown; id?: unknown; text?: unknown }
+      let parsed: { type?: unknown; id?: unknown; text?: unknown; token?: unknown }
       try {
-        parsed = JSON.parse(data.toString()) as { type?: unknown; id?: unknown; text?: unknown }
+        parsed = JSON.parse(data.toString()) as { type?: unknown; id?: unknown; text?: unknown; token?: unknown }
       } catch {
-        sendJson({ type: 'error', error: 'Invalid Q&A message' })
+        if (!authenticated) {
+          socket.close(4001, 'Invalid auth message')
+        } else {
+          sendJson({ type: 'error', error: 'Invalid Q&A message' })
+        }
+        return
+      }
+
+      if (!authenticated) {
+        if (parsed.type !== 'auth' || typeof parsed.token !== 'string' || !parsed.token) {
+          socket.close(4001, 'Authentication required')
+          return
+        }
+
+        try {
+          userId = verifyToken(parsed.token).userId
+        } catch {
+          socket.close(4001, 'Invalid token')
+          return
+        }
+
+        authenticated = true
+        clearTimeout(authTimeout)
+        sendJson({ type: 'auth', ok: true })
         return
       }
 
@@ -258,13 +345,15 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     })
 
     socket.on('close', () => {
+      clearTimeout(authTimeout)
       closed = true
       questionQueue.length = 0
-      request.log.info({ userId }, 'Q&A WebSocket closed')
+      request.log.info({ userId: userId ?? 'unauthenticated' }, 'Q&A WebSocket closed')
     })
 
     socket.on('error', (err) => {
-      request.log.error({ err, userId }, 'Q&A WebSocket error')
+      clearTimeout(authTimeout)
+      request.log.error({ err, userId: userId ?? 'unauthenticated' }, 'Q&A WebSocket error')
     })
   })
 
@@ -274,17 +363,7 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
 
     const [user] = await getDb().select().from(users).where(eq(users.id, userId)).limit(1)
     const [profile] = await getDb().select().from(profiles).where(eq(profiles.userId, userId)).limit(1)
-    // Plan validation: require active, non-expired plan
-    const [activePlan] = await getDb()
-      .select()
-      .from(require('../db/schema').plans)
-      .where(and(
-        eq(require('../db/schema').plans.userId, userId),
-        eq(require('../db/schema').plans.isActive, true),
-        gt(require('../db/schema').plans.expiresAt, new Date())
-      ))
-      .orderBy(desc(require('../db/schema').plans.createdAt))
-      .limit(1)
+    const activePlan = await getActivePlan(userId)
 
     if (!user) {
       return reply.code(404).send({ error: 'User not found' })
@@ -293,17 +372,6 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: 'No active plan. Please purchase or renew your plan to start an interview.' })
     }
 
-    // ── DEBUG: log what DB returned for this user ──────────────────────────
-    request.log.info({
-      userId,
-      profileFound: !!profile,
-      hasResumeText: !!profile?.resumeText,
-      resumeTextLength: profile?.resumeText?.length ?? 0,
-      hasResumeUrl: !!profile?.resumeUrl,
-      hasJobDescription: !!profile?.jobDescription,
-      jobRole: profile?.jobRole ?? null,
-      hasActivePlan: !!activePlan
-    }, '[DEBUG] /interview/start — profile data from DB')
 
     const resumeText = profile?.resumeText ?? null
     if (!resumeText && profile?.resumeUrl) {
@@ -401,6 +469,22 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
     // Reject oversized payloads early (> 5MB base64 ≈ 3.7MB raw)
     if (image.length > 5 * 1024 * 1024) {
       return reply.code(413).send({ error: 'Image too large' })
+    }
+
+    // Per-user rate limit
+    const now = Date.now()
+    const bucket = codeSuggestBucket.get(userId)
+    if (!bucket || bucket.resetAt <= now) {
+      codeSuggestBucket.set(userId, { count: 1, resetAt: now + CODE_SUGGEST_WINDOW_MS })
+    } else if (bucket.count >= CODE_SUGGEST_LIMIT) {
+      return reply.code(429).send({ error: 'Too many code analysis requests. Please wait before trying again.' })
+    } else {
+      bucket.count += 1
+    }
+
+    const activePlan = await getActivePlan(userId)
+    if (!activePlan) {
+      return reply.code(403).send({ error: 'No active plan. Please purchase or renew your plan to use code suggestions.' })
     }
 
     request.log.info({ imageLen: image.length }, 'Code analysis request received')

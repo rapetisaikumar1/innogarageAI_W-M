@@ -1,5 +1,8 @@
 import https from 'https'
 
+if (!process.env.BREVO_API_KEY) {
+  console.warn('[email] BREVO_API_KEY is not set \u2014 all email delivery will fail at runtime')
+}
 const BREVO_API_KEY = process.env.BREVO_API_KEY || ''
 const FROM_EMAIL = process.env.FROM_EMAIL || 'rapetisaikumar1999@gmail.com'
 const FROM_NAME = 'innogarage.ai'

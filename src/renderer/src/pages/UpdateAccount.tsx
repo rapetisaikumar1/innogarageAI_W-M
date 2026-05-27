@@ -43,6 +43,7 @@ export default function UpdateAccount(): React.JSX.Element {
   const [loading, setLoading] = useState(false)
   const [pageLoading, setPageLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -68,8 +69,8 @@ export default function UpdateAccount(): React.JSX.Element {
           aiInstructions: res.profile.aiInstructions || ''
         })
       }
-    } catch {
-      // Handle error silently
+    } catch (err) {
+      setError((err as Error).message || 'Failed to load profile information.')
     } finally {
       setPageLoading(false)
     }
@@ -90,6 +91,7 @@ export default function UpdateAccount(): React.JSX.Element {
     }
     setResumeFile(file)
     setError('')
+    setNotice('')
   }
 
   const validate = (): boolean => {
@@ -107,9 +109,13 @@ export default function UpdateAccount(): React.JSX.Element {
     if (!validate()) return
     setLoading(true)
     setError('')
+    setNotice('')
     try {
       if (resumeFile) {
-        await api.uploadResume(resumeFile)
+        const uploadResult = await api.uploadResume(resumeFile)
+        if (uploadResult.warning) {
+          setNotice(uploadResult.warning)
+        }
       }
       const profileData = {
         jobDescription: form.jobDescription,
@@ -269,6 +275,12 @@ export default function UpdateAccount(): React.JSX.Element {
               </label>
             </div>
           </div>
+
+          {notice && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+              {notice}
+            </div>
+          )}
 
           {/* Job Description */}
           <div>

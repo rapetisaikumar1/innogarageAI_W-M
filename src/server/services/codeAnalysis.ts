@@ -18,6 +18,21 @@ function getGenAI(): GoogleGenAI {
 
 // Per-user system prompts (stateless model calls — context baked into systemInstruction)
 const codeAnalysisPrompts = new Map<string, string>()
+const codeAnalysisActivity = new Map<string, number>() // userId → lastActivityAt
+
+// Evict sessions idle for more than 4 hours
+const CODE_ANALYSIS_IDLE_TTL_MS = 4 * 60 * 60 * 1000
+const _codeAnalysisCleanup = setInterval(() => {
+  const cutoff = Date.now() - CODE_ANALYSIS_IDLE_TTL_MS
+  for (const [uid, lastAt] of codeAnalysisActivity) {
+    if (lastAt < cutoff) {
+      console.warn(`[CodeAnalysis] evicting idle session — userId=${uid}`)
+      codeAnalysisPrompts.delete(uid)
+      codeAnalysisActivity.delete(uid)
+    }
+  }
+}, 30 * 60 * 1000)
+_codeAnalysisCleanup.unref?.()
 
 interface CodeAnalysisContext {
   name: string
@@ -110,6 +125,7 @@ function buildCodeAnalysisPrompt(ctx: CodeAnalysisContext): string {
 
 export async function initCodeAnalysisSession(userId: string, ctx: CodeAnalysisContext): Promise<void> {
   codeAnalysisPrompts.set(userId, buildCodeAnalysisPrompt(ctx))
+  codeAnalysisActivity.set(userId, Date.now())
 }
 
 export interface CodeSuggestionResult {
@@ -128,6 +144,7 @@ export async function analyzeScreenContent(
   if (!systemInstruction) {
     throw new Error('No active code analysis session. Please start an interview first.')
   }
+  codeAnalysisActivity.set(userId, Date.now())
 
   // Strip data URI prefix if present (e.g. "data:image/jpeg;base64,...")
   let imageData = base64Image
@@ -215,6 +232,7 @@ export async function analyzeScreenContent(
 
 export function endCodeAnalysisSession(userId: string): void {
   codeAnalysisPrompts.delete(userId)
+  codeAnalysisActivity.delete(userId)
 }
 
 export function hasCodeAnalysisSession(userId: string): boolean {

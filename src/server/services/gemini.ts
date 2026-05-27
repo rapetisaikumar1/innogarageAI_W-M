@@ -21,9 +21,23 @@ interface UserSessionData {
   chat: Chat
   ctx: UserContext
   history: HistoryTurn[]
+  lastActivityAt: number
 }
 
 const userSessions = new Map<string, UserSessionData>()
+
+// Evict sessions idle for more than 4 hours so that client crashes don't leak memory
+const SESSION_IDLE_TTL_MS = 4 * 60 * 60 * 1000
+const _sessionCleanup = setInterval(() => {
+  const cutoff = Date.now() - SESSION_IDLE_TTL_MS
+  for (const [uid, data] of userSessions) {
+    if (data.lastActivityAt < cutoff) {
+      console.warn(`[Gemini] evicting idle session — userId=${uid}`)
+      userSessions.delete(uid)
+    }
+  }
+}, 30 * 60 * 1000)
+_sessionCleanup.unref?.()
 
 interface UserContext {
   name: string
@@ -288,7 +302,7 @@ export async function initUserSession(userId: string, ctx: UserContext, history:
   })
 
   const chat = buildChatSession(ctx, history)
-  userSessions.set(userId, { chat, ctx, history: [...history] })
+  userSessions.set(userId, { chat, ctx, history: [...history], lastActivityAt: Date.now() })
 }
 
 function isTransient(err: unknown): boolean {
@@ -376,6 +390,7 @@ export async function generateAnswer(userId: string, question: string): Promise<
   if (!data) {
     throw new Error('No active interview session. Please start an interview first.')
   }
+  data.lastActivityAt = Date.now()
   const result = await retryWithBackoff(() => data.chat.sendMessage({ message: question }))
   return result.text ?? ''
 }
@@ -389,6 +404,7 @@ export async function* generateAnswerStream(
   if (!data) {
     throw new Error('No active interview session. Please start an interview first.')
   }
+  data.lastActivityAt = Date.now()
 
   let accumulatedAnswer = ''
   let skipFlashFallback = false

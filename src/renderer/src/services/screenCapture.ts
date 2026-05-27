@@ -1,3 +1,5 @@
+import { API_BASE_URL } from './config'
+
 /**
  * Screen Capture Pipeline — self-contained, independent of any UI component.
  *
@@ -12,7 +14,6 @@
 
 const CAPTURE_INTERVAL_MS = 2000  // 2s capture cadence
 const JPEG_QUALITY = 0.72          // Sharp enough for code OCR; ~20% smaller than 0.8
-const BASE_URL = 'https://innogarage-ai-production.up.railway.app'
 const DEBUG = import.meta.env.DEV
 
 // ── Media state ───────────────────────────────────────────────────────────────
@@ -44,6 +45,18 @@ function dbg(...args: unknown[]): void {
   if (DEBUG) console.log('[ScreenCapture]', ...args)
 }
 
+function isScreenSuggestion(value: unknown): value is ScreenSuggestion {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.detected === 'boolean' &&
+    typeof candidate.language === 'string' &&
+    typeof candidate.context === 'string' &&
+    typeof candidate.suggestion === 'string' &&
+    typeof candidate.explanation === 'string'
+  )
+}
+
 // ── AI call ───────────────────────────────────────────────────────────────────
 
 async function sendToAI(base64: string): Promise<void> {
@@ -55,7 +68,7 @@ async function sendToAI(base64: string): Promise<void> {
   const timer = setTimeout(() => controller.abort(), 30_000) // 30s max per analysis
 
   try {
-    const res = await fetch(`${BASE_URL}/interview/code-suggest`, {
+    const res = await fetch(`${API_BASE_URL}/interview/code-suggest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -70,7 +83,10 @@ async function sendToAI(base64: string): Promise<void> {
       return
     }
 
-    const result = await res.json() as ScreenSuggestion
+    const result = await res.json() as unknown
+    if (!isScreenSuggestion(result)) {
+      throw new Error('Invalid code analysis response structure')
+    }
     dbg('AI result — detected:', result.detected, 'language:', result.language)
     onSuggestionCb?.(result)
 

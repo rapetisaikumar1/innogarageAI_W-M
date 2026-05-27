@@ -1,17 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Download } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { useProfileStore } from '../store/profileStore'
-
-const BASE_URL = 'https://innogarage-ai-production.up.railway.app'
+import { api } from '../services/api'
 
 export default function ResumeViewer(): React.JSX.Element {
   const navigate = useNavigate()
   const { isLoggedIn } = useAuthStore()
   const { profile } = useProfileStore()
+  const [resumeUrl, setResumeUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const token = localStorage.getItem('token') || ''
+  const canPreview = profile?.resumeFilename?.toLowerCase().endsWith('.pdf') ?? false
 
   useEffect(() => {
     if (!isLoggedIn || !profile?.resumeFilename) {
@@ -19,16 +21,52 @@ export default function ResumeViewer(): React.JSX.Element {
     }
   }, [isLoggedIn, profile?.resumeFilename])
 
+  useEffect(() => {
+    if (!isLoggedIn || !profile?.resumeFilename) return
+
+    let nextUrl: string | null = null
+    let cancelled = false
+
+    const loadResume = async (): Promise<void> => {
+      setLoading(true)
+      setError(null)
+
+      try {
+        const blob = await api.getResumeFile()
+        if (cancelled) return
+        nextUrl = URL.createObjectURL(blob)
+        setResumeUrl(nextUrl)
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message)
+          setResumeUrl(null)
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void loadResume()
+
+    return () => {
+      cancelled = true
+      if (nextUrl) URL.revokeObjectURL(nextUrl)
+    }
+  }, [isLoggedIn, profile?.resumeFilename])
+
   if (!isLoggedIn || !profile?.resumeFilename) {
     return <></>
   }
 
-  const proxyUrl = `${BASE_URL}/profile/resume/proxy?token=${encodeURIComponent(token)}`
-  const downloadUrl = `${BASE_URL}/profile/resume/proxy?token=${encodeURIComponent(token)}&download=1`
-
   const handleDownload = (): void => {
-    // Electron's native downloader — saves to system Downloads folder with progress bar
-    window.api.downloadFile(downloadUrl)
+    if (!resumeUrl) return
+
+    const link = document.createElement('a')
+    link.href = resumeUrl
+    link.download = profile.resumeFilename || 'resume'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   return (
@@ -49,6 +87,7 @@ export default function ResumeViewer(): React.JSX.Element {
 
         <button
           onClick={handleDownload}
+          disabled={!resumeUrl || loading}
           className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg bg-brand-500/20 border border-brand-500/40 text-brand-400 hover:bg-brand-500/30 transition-colors"
         >
           <Download className="w-4 h-4" />
@@ -57,11 +96,31 @@ export default function ResumeViewer(): React.JSX.Element {
       </div>
 
       {/* Resume viewer — fills remaining height */}
-      <iframe
-        src={proxyUrl}
-        className="flex-1 w-full border-0 bg-white"
-        title="Resume Preview"
-      />
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center bg-gray-950">
+          <div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full" />
+        </div>
+      ) : error ? (
+        <div className="flex-1 flex items-center justify-center bg-gray-950 px-6 text-center">
+          <div>
+            <p className="text-sm text-red-400">{error}</p>
+            <p className="text-xs text-gray-500 mt-2">Try reopening the resume or downloading the file.</p>
+          </div>
+        </div>
+      ) : canPreview && resumeUrl ? (
+        <iframe
+          src={resumeUrl}
+          className="flex-1 w-full border-0 bg-white"
+          title="Resume Preview"
+        />
+      ) : (
+        <div className="flex-1 flex items-center justify-center bg-gray-950 px-6 text-center">
+          <div>
+            <p className="text-sm text-gray-300">Preview is available only for PDF resumes.</p>
+            <p className="text-xs text-gray-500 mt-2">Use Download to open Word documents locally.</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

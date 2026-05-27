@@ -31,6 +31,7 @@ interface InterviewState {
   qaPairs: QAPair[]
   isProcessing: boolean
   error: string | null
+  sessionPersisted: boolean
 
   // Code suggestions state
   codeSuggestion: CodeSuggestion | null
@@ -46,6 +47,7 @@ interface InterviewState {
   updateQAPairAnswer: (id: string, answer: string) => void
   setProcessing: (processing: boolean) => void
   setError: (error: string | null) => void
+  setSessionPersisted: (persisted: boolean) => void
 
   // Code suggestions actions
   setCodeSuggestion: (suggestion: CodeSuggestion | null) => void
@@ -64,6 +66,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
   qaPairs: [],
   isProcessing: false,
   error: null,
+  sessionPersisted: false,
 
   // Code suggestions
   codeSuggestion: null,
@@ -84,6 +87,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
     set((state) => ({ qaPairs: state.qaPairs.map((p) => (p.id === id ? { ...p, answer } : p)) })),
   setProcessing: (processing) => set({ isProcessing: processing }),
   setError: (error) => set({ error }),
+  setSessionPersisted: (persisted) => set({ sessionPersisted: persisted }),
 
   // Code suggestions
   setCodeSuggestion: (suggestion) => set({ codeSuggestion: suggestion }),
@@ -100,6 +104,7 @@ export const useInterviewStore = create<InterviewState>((set) => ({
       qaPairs: [],
       isProcessing: false,
       error: null,
+      sessionPersisted: false,
       codeSuggestion: null,
       isAnalyzingScreen: false,
       screenCaptureActive: false

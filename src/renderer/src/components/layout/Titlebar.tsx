@@ -128,7 +128,7 @@ export default function Titlebar(): React.JSX.Element {
   const location = useLocation()
   const { isLoggedIn, logout } = useAuthStore()
   const { plan, reset: resetProfile } = useProfileStore()
-  const { audioSource, setAudioSource, elapsedSeconds, setElapsedSeconds, reset: resetInterview } = useInterviewStore()
+  const { audioSource, setAudioSource, elapsedSeconds, setElapsedSeconds, reset: resetInterview, setSessionPersisted } = useInterviewStore()
   const { saveSession } = useSessionStore()
   const [isMaximized, setIsMaximized] = useState(false)
   const [privacyOverride, setPrivacyOverride] = useState<{ key: string; enabled: boolean } | null>(null)
@@ -217,7 +217,7 @@ export default function Titlebar(): React.JSX.Element {
   const handleExitInterview = (): void => {
     // Save session before resetting state
     const state = useInterviewStore.getState()
-    if (state.qaPairs.length > 0 || state.transcriptions.length > 0) {
+    if (!state.sessionPersisted && (state.qaPairs.length > 0 || state.transcriptions.length > 0)) {
       saveSession({
         id: crypto.randomUUID(),
         date: Date.now(),
@@ -225,6 +225,7 @@ export default function Titlebar(): React.JSX.Element {
         qaPairs: [...state.qaPairs],
         transcriptions: [...state.transcriptions]
       })
+      setSessionPersisted(true)
     }
     stopAudioPipeline()
     api.interviewEnd().catch(() => {})

@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify'
+import { FastifyInstance, FastifyReply } from 'fastify'
 import { eq } from 'drizzle-orm'
 import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
@@ -17,6 +17,8 @@ function generateOtp(): string {
 const otpStore = new Map<string, { code: string; expiresAt: number; name: string }>()       // registration
 const signinOtpStore = new Map<string, { code: string; expiresAt: number }>()               // sign-in 2FA
 const resetOtpStore = new Map<string, { code: string; expiresAt: number }>()                // password reset
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>()
+let otpCleanupInterval: ReturnType<typeof setInterval> | null = null
 
 // Periodic cleanup of expired OTPs to prevent memory leaks
 function purgeExpiredOtps(): void {
@@ -31,11 +33,72 @@ function purgeExpiredOtps(): void {
     if (val.expiresAt < now) resetOtpStore.delete(key)
   }
 }
-setInterval(purgeExpiredOtps, 5 * 60 * 1000) // every 5 minutes
+
+function purgeExpiredRateLimits(): void {
+  const now = Date.now()
+  for (const [key, val] of rateLimitStore) {
+    if (val.resetAt <= now) rateLimitStore.delete(key)
+  }
+}
+
+function startAuthCleanup(): void {
+  if (otpCleanupInterval) return
+  otpCleanupInterval = setInterval(() => {
+    purgeExpiredOtps()
+    purgeExpiredRateLimits()
+  }, 5 * 60 * 1000)
+  otpCleanupInterval.unref?.()
+}
+
+function stopAuthCleanup(): void {
+  if (!otpCleanupInterval) return
+  clearInterval(otpCleanupInterval)
+  otpCleanupInterval = null
+}
+
+function consumeRateLimit(key: string, limit: number, windowMs: number): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now()
+  const existing = rateLimitStore.get(key)
+
+  if (!existing || existing.resetAt <= now) {
+    rateLimitStore.set(key, { count: 1, resetAt: now + windowMs })
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+
+  if (existing.count >= limit) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((existing.resetAt - now) / 1000))
+    }
+  }
+
+  existing.count += 1
+  rateLimitStore.set(key, existing)
+  return { allowed: true, retryAfterSeconds: 0 }
+}
+
+function isRateLimited(reply: FastifyReply, key: string, limit: number, windowMs: number, error: string): boolean {
+  const result = consumeRateLimit(key, limit, windowMs)
+  if (result.allowed) return false
+
+  reply.header('Retry-After', String(result.retryAfterSeconds))
+  void reply.code(429).send({ error })
+  return true
+}
+
+function clearRateLimit(key: string): void {
+  rateLimitStore.delete(key)
+}
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  startAuthCleanup()
+  app.addHook('onClose', async () => {
+    stopAuthCleanup()
+  })
+
   // Google identity — returns Google user info without touching DB (used for email verification during signup)
   app.get('/auth/google/identity', async (request, reply) => {
+    if (isRateLimited(reply, `google-identity:ip:${request.ip}`, 10, 10 * 60 * 1000, 'Too many requests. Please wait before trying again.')) return
     const { code } = request.query as { code: string }
     if (!code) return reply.code(400).send({ error: 'Missing code' })
     const googleUser = await getGoogleUser(code)
@@ -51,9 +114,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const { name } = request.body as { name: string }
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
 
+    if (isRateLimited(reply, `signup-send:ip:${request.ip}`, 5, 10 * 60 * 1000, 'Too many verification code requests. Please wait before trying again.')) return
+
     if (!email || !name) {
       return reply.code(400).send({ error: 'Email and name are required' })
     }
+
+    if (isRateLimited(reply, `signup-send:email:${email}`, 3, 10 * 60 * 1000, 'Too many verification code requests. Please wait before trying again.')) return
 
     const [existing] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
     if (existing) {
@@ -70,8 +137,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     otpStore.set(email, { code, expiresAt, name })
 
-    // Send in background — respond immediately so the UI doesn't hang
-    sendVerificationEmail(email, code, name).catch(() => {})
+    try {
+      await sendVerificationEmail(email, code, name)
+    } catch (err) {
+      otpStore.delete(email)
+      request.log.error({ err, email }, 'Failed to send registration verification email')
+      return reply.code(502).send({ error: 'Unable to send verification code right now. Please try again.' })
+    }
     console.log(`[auth] OTP generated for ${email}`)
 
     return { message: 'Verification code sent' }
@@ -88,12 +160,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
 
+    if (email && isRateLimited(reply, `signup-verify:${email}`, 8, 10 * 60 * 1000, 'Too many verification attempts. Please request a new code.')) return
+
     // Verify OTP
     const stored = otpStore.get(email)
     if (!stored) {
-      if (otpStore.size === 0) {
-        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
-      }
       return reply.code(400).send({ error: 'No verification code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -106,6 +177,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     // OTP valid — remove it to prevent reuse
     otpStore.delete(email)
+    clearRateLimit(`signup-verify:${email}`)
 
     const [existing] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
     if (existing) {
@@ -148,15 +220,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
     const { password } = request.body as { password: string }
 
+    if (isRateLimited(reply, `signin-send:ip:${request.ip}`, 8, 10 * 60 * 1000, 'Too many sign-in code requests. Please wait before trying again.')) return
+    if (isRateLimited(reply, `signin-send:email:${email}`, 5, 10 * 60 * 1000, 'Too many sign-in code requests. Please wait before trying again.')) return
+
     const [user] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
 
     if (!user) {
       return reply.code(401).send({ error: 'Invalid email or password' })
     }
     if (user.googleId) {
-      return reply.code(401).send({
-        error: 'This account uses Google Sign-In. Please click "Sign in with Google".'
-      })
+      return reply.code(401).send({ error: 'Invalid email or password' })
     }
     if (!user.passwordHash) {
       return reply.code(401).send({ error: 'Invalid email or password' })
@@ -170,8 +243,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const code = generateOtp()
     signinOtpStore.set(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 })
 
-    // Send in background — respond immediately so the UI doesn't hang
-    sendSigninOtpEmail(email, code, user.name).catch(() => {})
+    try {
+      await sendSigninOtpEmail(email, code, user.name)
+    } catch (err) {
+      signinOtpStore.delete(email)
+      request.log.error({ err, email }, 'Failed to send sign-in verification email')
+      return reply.code(502).send({ error: 'Unable to send verification code right now. Please try again.' })
+    }
     console.log(`[auth] Sign-in OTP generated for ${email}`)
 
     return { message: 'Verification code sent' }
@@ -182,11 +260,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
     const { otp } = request.body as { otp: string }
 
+    if (email && isRateLimited(reply, `signin-verify:${email}`, 8, 10 * 60 * 1000, 'Too many sign-in attempts. Please request a new code.')) return
+
     const stored = signinOtpStore.get(email)
     if (!stored) {
-      if (signinOtpStore.size === 0) {
-        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
-      }
       return reply.code(400).send({ error: 'No verification code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -197,6 +274,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'Incorrect verification code.' })
     }
     signinOtpStore.delete(email)
+    clearRateLimit(`signin-verify:${email}`)
 
     const [user] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
     if (!user) {
@@ -222,6 +300,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const googleUser = await getGoogleUser(code)
     const googleEmail = googleUser.email.trim().toLowerCase()
+
+    if (isRateLimited(reply, `google-send:ip:${request.ip}`, 5, 10 * 60 * 1000, 'Too many verification code requests. Please wait before trying again.')) return
+    if (isRateLimited(reply, `google-send:email:${googleEmail}`, 3, 10 * 60 * 1000, 'Too many verification code requests. Please wait before trying again.')) return
 
     // Returning Google user — log in directly, no OTP needed
     const [existing] = await getDb()
@@ -257,8 +338,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const expiresAt = Date.now() + 10 * 60 * 1000
     otpStore.set(googleEmail, { code: otpCode, expiresAt, name: googleUser.name })
 
-    // Send in background — respond immediately
-    sendVerificationEmail(googleEmail, otpCode, googleUser.name).catch(() => {})
+    try {
+      await sendVerificationEmail(googleEmail, otpCode, googleUser.name)
+    } catch (err) {
+      otpStore.delete(googleEmail)
+      request.log.error({ err, email: googleEmail }, 'Failed to send Google registration verification email')
+      return reply.code(502).send({ error: 'Unable to send verification code right now. Please try again.' })
+    }
     console.log(`[auth] Google OTP generated for ${googleEmail}`)
 
     return {
@@ -274,11 +360,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const { name, googleId, otp } = request.body as { name: string; googleId: string; otp: string }
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
 
+    if (email && isRateLimited(reply, `google-verify:${email}`, 8, 10 * 60 * 1000, 'Too many verification attempts. Please request a new code.')) return
+
     const stored = otpStore.get(email)
     if (!stored) {
-      if (otpStore.size === 0) {
-        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
-      }
       return reply.code(400).send({ error: 'No verification code found. Please try again.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -289,6 +374,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'Incorrect verification code.' })
     }
     otpStore.delete(email)
+    clearRateLimit(`google-verify:${email}`)
 
     // Race condition guard
     const [exists] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
@@ -318,23 +404,29 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // Forgot password — sends 6-digit OTP to email
   app.post('/auth/forgot-password', async (request, reply) => {
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
+    const genericMessage = { message: 'If an account with this email exists, a password reset code has been sent.' }
+
+    if (isRateLimited(reply, `reset-send:ip:${request.ip}`, 5, 10 * 60 * 1000, 'Too many password reset requests. Please wait before trying again.')) return
+    if (isRateLimited(reply, `reset-send:email:${email}`, 3, 10 * 60 * 1000, 'Too many password reset requests. Please wait before trying again.')) return
 
     const [user] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
-    if (!user) {
-      return reply.code(400).send({ error: 'No account found with this email address.' })
-    }
-    if (user.googleId) {
-      return reply.code(400).send({ error: 'This email is registered via Google Sign-In. Please use "Sign in with Google" to access your account.' })
+    if (!user || user.googleId) {
+      return genericMessage
     }
 
     const code = generateOtp()
     resetOtpStore.set(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 })
 
-    // Send in background — respond immediately
-    sendPasswordResetEmail(email, code).catch(() => {})
+    try {
+      await sendPasswordResetEmail(email, code)
+    } catch (err) {
+      resetOtpStore.delete(email)
+      request.log.error({ err, email }, 'Failed to send password reset email')
+      return genericMessage // still return generic to prevent account enumeration
+    }
     console.log(`[auth] Password reset OTP generated for ${email}`)
 
-    return { message: 'Password reset code sent to your email' }
+    return genericMessage
   })
 
   // Reset password — verifies OTP, then sets new password
@@ -342,11 +434,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const { otp, newPassword } = request.body as { otp: string; newPassword: string }
     const email = ((request.body as { email: string }).email || '').trim().toLowerCase()
 
+    if (email && isRateLimited(reply, `reset-verify:${email}`, 8, 10 * 60 * 1000, 'Too many reset attempts. Please request a new code.')) return
+
     const stored = resetOtpStore.get(email)
     if (!stored) {
-      if (resetOtpStore.size === 0) {
-        return reply.code(400).send({ error: 'The server was restarted. Please request a new reset code.' })
-      }
       return reply.code(400).send({ error: 'No reset code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -357,6 +448,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'Incorrect reset code.' })
     }
     resetOtpStore.delete(email)
+    clearRateLimit(`reset-verify:${email}`)
+
+    if (!newPassword || newPassword.length < 8) {
+      return reply.code(400).send({ error: 'Password must be at least 8 characters.' })
+    }
 
     const [user] = await getDb().select().from(users).where(eq(users.email, email)).limit(1)
     if (!user) {

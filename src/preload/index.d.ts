@@ -1,5 +1,7 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
+type PersistedStorageKey = 'auth' | 'profile' | 'sessions'
+
 interface WindowAPI {
   minimize: () => void
   maximize: () => void
@@ -8,6 +10,9 @@ interface WindowAPI {
   openExternal: (url: string) => Promise<void>
   platform: string
   downloadFile: (url: string) => Promise<void>
+  storageGet: <T>(key: PersistedStorageKey) => Promise<T | null>
+  storageSet: <T>(key: PersistedStorageKey, value: T) => Promise<void>
+  storageDelete: (key: PersistedStorageKey) => Promise<void>
   googleAuth: () => Promise<
     | {
         type: 'login'

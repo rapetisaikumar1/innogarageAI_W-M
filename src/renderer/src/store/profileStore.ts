@@ -27,16 +27,41 @@ interface Plan {
 interface ProfileState {
   profile: Profile | null
   plan: Plan | null
+  loadFromStorage: () => Promise<void>
   setProfile: (profile: Profile | null) => void
   setPlan: (plan: Plan | null) => void
   reset: () => void
+}
+
+interface StoredProfileState {
+  profile: Profile | null
+  plan: Plan | null
 }
 
 export const useProfileStore = create<ProfileState>((set) => ({
   profile: null,
   plan: null,
 
-  setProfile: (profile) => set({ profile }),
-  setPlan: (plan) => set({ plan }),
-  reset: () => set({ profile: null, plan: null })
+  loadFromStorage: async () => {
+    const stored = await window.api.storageGet<StoredProfileState>('profile')
+    if (!stored) return
+    set({ profile: stored.profile, plan: stored.plan })
+  },
+
+  setProfile: (profile) => set((state) => {
+    const nextState = { profile, plan: state.plan }
+    void window.api.storageSet('profile', nextState)
+    return { profile }
+  }),
+
+  setPlan: (plan) => set((state) => {
+    const nextState = { profile: state.profile, plan }
+    void window.api.storageSet('profile', nextState)
+    return { plan }
+  }),
+
+  reset: () => {
+    void window.api.storageDelete('profile')
+    set({ profile: null, plan: null })
+  }
 }))

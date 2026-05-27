@@ -13,13 +13,27 @@ import AudioPermissions from './pages/AudioPermissions'
 import InterviewScreen from './pages/InterviewScreen'
 import PastSessions from './pages/PastSessions'
 import { useAuthStore } from './store/authStore'
+import { useProfileStore } from './store/profileStore'
+import { useSessionStore } from './store/sessionStore'
 
 function App(): React.JSX.Element {
-  const { loadFromStorage } = useAuthStore()
+  const { loadFromStorage, hasHydrated } = useAuthStore()
+  const { loadFromStorage: loadProfileFromStorage } = useProfileStore()
+  const { loadSessions } = useSessionStore()
 
   useEffect(() => {
-    loadFromStorage()
-  }, [])
+    void loadFromStorage()
+    void loadProfileFromStorage()
+    void loadSessions()
+  }, [loadFromStorage, loadProfileFromStorage, loadSessions])
+
+  if (!hasHydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-950">
+        <div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full" />
+      </div>
+    )
+  }
 
   return (
     <HashRouter>
