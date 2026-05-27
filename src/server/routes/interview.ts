@@ -274,9 +274,23 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
 
     const [user] = await getDb().select().from(users).where(eq(users.id, userId)).limit(1)
     const [profile] = await getDb().select().from(profiles).where(eq(profiles.userId, userId)).limit(1)
+    // Plan validation: require active, non-expired plan
+    const [activePlan] = await getDb()
+      .select()
+      .from(require('../db/schema').plans)
+      .where(and(
+        eq(require('../db/schema').plans.userId, userId),
+        eq(require('../db/schema').plans.isActive, true),
+        gt(require('../db/schema').plans.expiresAt, new Date())
+      ))
+      .orderBy(desc(require('../db/schema').plans.createdAt))
+      .limit(1)
 
     if (!user) {
       return reply.code(404).send({ error: 'User not found' })
+    }
+    if (!activePlan) {
+      return reply.code(403).send({ error: 'No active plan. Please purchase or renew your plan to start an interview.' })
     }
 
     // ── DEBUG: log what DB returned for this user ──────────────────────────
@@ -287,7 +301,8 @@ export async function interviewRoutes(app: FastifyInstance): Promise<void> {
       resumeTextLength: profile?.resumeText?.length ?? 0,
       hasResumeUrl: !!profile?.resumeUrl,
       hasJobDescription: !!profile?.jobDescription,
-      jobRole: profile?.jobRole ?? null
+      jobRole: profile?.jobRole ?? null,
+      hasActivePlan: !!activePlan
     }, '[DEBUG] /interview/start — profile data from DB')
 
     const resumeText = profile?.resumeText ?? null

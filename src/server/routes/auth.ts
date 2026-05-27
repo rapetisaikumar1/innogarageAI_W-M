@@ -91,6 +91,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     // Verify OTP
     const stored = otpStore.get(email)
     if (!stored) {
+      if (otpStore.size === 0) {
+        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
+      }
       return reply.code(400).send({ error: 'No verification code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -181,6 +184,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const stored = signinOtpStore.get(email)
     if (!stored) {
+      if (signinOtpStore.size === 0) {
+        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
+      }
       return reply.code(400).send({ error: 'No verification code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -270,6 +276,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const stored = otpStore.get(email)
     if (!stored) {
+      if (otpStore.size === 0) {
+        return reply.code(400).send({ error: 'The server was restarted. Please request a new verification code.' })
+      }
       return reply.code(400).send({ error: 'No verification code found. Please try again.' })
     }
     if (Date.now() > stored.expiresAt) {
@@ -335,6 +344,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const stored = resetOtpStore.get(email)
     if (!stored) {
+      if (resetOtpStore.size === 0) {
+        return reply.code(400).send({ error: 'The server was restarted. Please request a new reset code.' })
+      }
       return reply.code(400).send({ error: 'No reset code found. Please request a new one.' })
     }
     if (Date.now() > stored.expiresAt) {

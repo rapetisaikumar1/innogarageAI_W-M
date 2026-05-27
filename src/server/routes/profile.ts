@@ -42,10 +42,8 @@ function pickProfileUpdates(body: unknown): ProfileUpdateBody {
 async function extractResumeText(buffer: Buffer, mimeType: string): Promise<string> {
   try {
     if (mimeType === 'application/pdf') {
-      const { PDFParse } = await import('pdf-parse')
-      const parser = new PDFParse({ data: buffer })
-      const result = await parser.getText()
-      await parser.destroy()
+      const pdfParse = (await import('pdf-parse')).default
+      const result = await pdfParse(buffer)
       return result.text.trim()
     }
     if (
