@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm install --ignore-scripts"]
+cmds = ["npm install --ignore-scripts --omit=dev"]
 
 [phases.build]
 cmds = []
